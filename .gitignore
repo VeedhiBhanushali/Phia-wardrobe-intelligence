@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+__pycache__/
+*.pyc
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+.DS_Store
+backend/data/*.bin
+backend/data/*.json
+backend/data/images/
+backend/data/event_log.jsonl
+.venv/
+venv/
