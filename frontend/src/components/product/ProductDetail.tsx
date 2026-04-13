@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Bookmark } from "lucide-react";
+import { ArrowLeft, Bookmark, MessageCircle } from "lucide-react";
 import { ScoreDisplay } from "@/components/wardrobe/ScoreDisplay";
 import { ProductDetailSkeleton } from "@/components/ui/Skeleton";
 import { InlineError } from "@/components/ui/ErrorBoundary";
@@ -18,15 +18,27 @@ interface ProductDetailProps {
   onBack: () => void;
   onSave: (item: WardrobeItem) => void;
   onRemove: (itemId: string) => void;
+  intentVector?: number[] | null;
+  intentConfidence?: number;
+  onAskPhia?: (itemId: string) => void;
+  onViewItem?: (view: { item_id: string; embedding: number[] }) => void;
 }
 
 interface EvalResult {
   taste_fit: number;
+  intent_match: number | null;
+  purchase_confidence: string;
   unlock_count: number;
   pairs_with: WardrobeItem[];
   explanation: string;
-  confidence: number;
+  best_price: number;
 }
+
+const CONFIDENCE_COLORS: Record<string, string> = {
+  HIGH: "text-green-600 bg-green-50",
+  MEDIUM: "text-amber-600 bg-amber-50",
+  LOW: "text-phia-gray-500 bg-phia-gray-50",
+};
 
 export function ProductDetail({
   itemId,
@@ -36,6 +48,10 @@ export function ProductDetail({
   onBack,
   onSave,
   onRemove,
+  intentVector,
+  intentConfidence,
+  onAskPhia,
+  onViewItem,
 }: ProductDetailProps) {
   const [item, setItem] = useState<WardrobeItem | null>(null);
   const [evaluation, setEvaluation] = useState<EvalResult | null>(null);
@@ -49,25 +65,61 @@ export function ProductDetail({
       setLoading(true);
       setError(null);
       try {
-        const catalogItem = (await api.catalog.getItem(itemId)) as WardrobeItem;
-        setItem(catalogItem);
+        const catalogItem = (await api.catalog.getItem(itemId, true)) as WardrobeItem & { embedding?: number[] };
+        const embedding = catalogItem.embedding;
+        const cleanItem = { ...catalogItem } as Record<string, unknown>;
+        delete cleanItem.embedding;
+        setItem(cleanItem as WardrobeItem);
+
+        if (embedding && onViewItem) {
+          onViewItem({ item_id: itemId, embedding });
+        }
 
         log("click", "product_detail", itemId);
 
         if (tasteProfile) {
-          const evalResult = (await api.recommendations.evaluateItem({
-            item_id: itemId,
-            user_id: tasteProfile.user_id,
-            wardrobe_item_ids: wardrobeItems.map((i) => i.item_id),
-            taste_vector: tasteProfile.taste_vector,
-          })) as EvalResult;
-          setEvaluation(evalResult);
+          try {
+            const evalResult = (await api.recommendations.evaluateItemV2({
+              item_id: itemId,
+              user_id: tasteProfile.user_id,
+              wardrobe_item_ids: wardrobeItems.map((i) => i.item_id),
+              taste_vector: tasteProfile.taste_vector,
+              intent_vector: intentVector,
+              intent_confidence: intentConfidence ?? 0,
+            })) as EvalResult;
+            setEvaluation(evalResult);
 
-          log("impression", "product_detail", itemId, {
-            score: evalResult.confidence,
-            unlock_count: evalResult.unlock_count,
-            taste_score: evalResult.taste_fit,
-          });
+            log("impression", "product_detail", itemId, {
+              score: evalResult.taste_fit,
+              unlock_count: evalResult.unlock_count,
+              taste_score: evalResult.taste_fit,
+            });
+          } catch {
+            // Fall back to v1 endpoint
+            const evalResult = (await api.recommendations.evaluateItem({
+              item_id: itemId,
+              user_id: tasteProfile.user_id,
+              wardrobe_item_ids: wardrobeItems.map((i) => i.item_id),
+              taste_vector: tasteProfile.taste_vector,
+            })) as {
+              taste_fit: number;
+              unlock_count: number;
+              pairs_with: WardrobeItem[];
+              explanation: string;
+              confidence: number;
+            };
+            setEvaluation({
+              ...evalResult,
+              intent_match: null,
+              purchase_confidence:
+                evalResult.confidence >= 0.5
+                  ? "HIGH"
+                  : evalResult.confidence >= 0.3
+                  ? "MEDIUM"
+                  : "LOW",
+              best_price: catalogItem.price,
+            });
+          }
         }
       } catch {
         setError("Couldn't load product details");
@@ -76,7 +128,7 @@ export function ProductDetail({
       }
     };
     load();
-  }, [itemId, tasteProfile, wardrobeItems, log]);
+  }, [itemId, tasteProfile, wardrobeItems, intentVector, intentConfidence, log, onViewItem]);
 
   const handleBookmark = () => {
     if (!item) return;
@@ -160,23 +212,82 @@ export function ProductDetail({
 
         {evaluation && (
           <div className="mt-4">
-            <ScoreDisplay
-              tasteFit={evaluation.taste_fit}
-              unlockCount={evaluation.unlock_count}
-              bestPrice={item.price}
-            />
+            {/* Score cards grid */}
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {/* Taste Fit */}
+              <div className="rounded-xl border border-phia-gray-200 p-3 text-center">
+                <span className="text-2xl font-semibold text-phia-orange tabular-nums">
+                  {Math.round(evaluation.taste_fit * 100)}%
+                </span>
+                <p className="text-[10px] font-medium text-phia-black mt-0.5">
+                  {evaluation.taste_fit >= 0.92 ? "Strong fit" : evaluation.taste_fit >= 0.80 ? "Good fit" : "Fair fit"}
+                </p>
+              </div>
 
+              {/* Purchase Confidence */}
+              <div className="rounded-xl border border-phia-gray-200 p-3 text-center">
+                <span
+                  className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    CONFIDENCE_COLORS[evaluation.purchase_confidence] ||
+                    CONFIDENCE_COLORS.LOW
+                  }`}
+                >
+                  {evaluation.purchase_confidence}
+                </span>
+                <p className="text-[10px] font-medium text-phia-black mt-1">
+                  Confidence
+                </p>
+              </div>
+
+              {/* Outfit Unlocks */}
+              <div className="rounded-xl border border-phia-gray-200 p-3 text-center">
+                <span className="text-2xl font-semibold text-phia-green tabular-nums">
+                  +{evaluation.unlock_count}
+                </span>
+                <p className="text-[10px] font-medium text-phia-black mt-0.5">
+                  Outfits
+                </p>
+              </div>
+            </div>
+
+            {/* Intent Match — only when intent confidence > 0.3 */}
+            {evaluation.intent_match !== null &&
+              intentConfidence !== undefined &&
+              intentConfidence > 0.3 && (
+                <div className="rounded-xl border border-phia-blue/20 bg-phia-blue/5 p-3 mb-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-phia-black">
+                      {evaluation.intent_match >= 0.92 ? "Strong" : evaluation.intent_match >= 0.80 ? "Good" : "Fair"} intent match
+                    </p>
+                    <p className="text-[10px] text-phia-gray-500">
+                      Based on your current browsing
+                    </p>
+                  </div>
+                  <span className="text-lg font-semibold text-phia-blue tabular-nums">
+                    {Math.round(evaluation.intent_match * 100)}%
+                  </span>
+                </div>
+              )}
+
+            {/* Best price */}
+            {evaluation.best_price > 0 && (
+              <div className="rounded-xl bg-phia-gray-50 p-3 mb-3 flex items-center justify-between">
+                <p className="text-xs text-phia-gray-600">Best price</p>
+                <span className="text-sm font-semibold text-phia-black">
+                  ${evaluation.best_price}
+                </span>
+              </div>
+            )}
+
+            {/* Pairs with */}
             {evaluation.pairs_with.length > 0 && (
-              <div className="mt-4">
+              <div className="mt-3">
                 <p className="text-xs font-medium text-phia-gray-900 mb-2">
-                  Pairs with
+                  Pairs with {evaluation.pairs_with.length} of your saves
                 </p>
                 <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
                   {evaluation.pairs_with.map((pair) => (
-                    <div
-                      key={pair.item_id}
-                      className="w-16 shrink-0"
-                    >
+                    <div key={pair.item_id} className="w-16 shrink-0">
                       <div className="aspect-square rounded-lg bg-phia-gray-100 overflow-hidden">
                         <img
                           src={resolveImageUrl(pair.image_url)}
@@ -194,6 +305,7 @@ export function ProductDetail({
               </div>
             )}
 
+            {/* AI insight */}
             <div className="mt-3 rounded-xl bg-phia-gray-50 px-4 py-3">
               <p className="text-sm text-phia-gray-600 italic font-serif">
                 &ldquo;{evaluation.explanation}&rdquo;
@@ -218,6 +330,17 @@ export function ProductDetail({
             {isSaved ? "Saved" : "Save to wardrobe"}
           </button>
         </div>
+
+        {/* Ask Phia about this */}
+        {onAskPhia && (
+          <button
+            onClick={() => onAskPhia(item.item_id)}
+            className="w-full mt-3 rounded-full border border-phia-gray-200 py-3 text-sm font-medium text-phia-black flex items-center justify-center gap-2"
+          >
+            <MessageCircle size={14} />
+            Ask Phia about this
+          </button>
+        )}
       </div>
     </motion.div>
   );

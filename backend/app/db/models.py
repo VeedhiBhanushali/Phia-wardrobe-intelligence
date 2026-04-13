@@ -71,6 +71,8 @@ class WardrobeRecommendationRequest(BaseModel):
     price_tier: list[float] = Field(default_factory=lambda: [40.0, 200.0])
     aesthetic_label: str = ""
     skipped_item_ids: list[str] = Field(default_factory=list)
+    intent_vector: list[float] | None = None
+    intent_confidence: float = 0.0
 
 class GapRecommendation(BaseModel):
     item: dict
@@ -129,12 +131,25 @@ class TasteUpdateRequest(BaseModel):
     taste_vector: list[float]
     item_id: str
     save_count: int
+    style_attributes: dict[str, float] = Field(default_factory=dict)
 
 class TasteUpdateResponse(BaseModel):
     taste_vector: list[float]
     trend_fingerprint: dict[str, float] = Field(default_factory=dict)
+    display_trends: dict[str, float] = Field(default_factory=dict)
     aesthetic_attributes: dict
     price_tier: list[float]
+    style_attributes: dict[str, float] = Field(default_factory=dict)
+    style_summary: list[dict] = Field(default_factory=list)
+
+class TasteDismissRequest(BaseModel):
+    item_id: str
+    style_attributes: dict[str, float] = Field(default_factory=dict)
+    dismiss_count: int = 1
+
+class TasteDismissResponse(BaseModel):
+    style_attributes: dict[str, float]
+    style_summary: list[dict]
 
 class EventLogRequest(BaseModel):
     user_id: str
@@ -167,3 +182,85 @@ class ShopperPlanRequest(BaseModel):
 class ShopperPlanResponse(BaseModel):
     plan: ShopperPlan
     items: list[dict] = Field(default_factory=list)
+
+
+# --- Intent Models ---
+
+class IntentComputeRequest(BaseModel):
+    viewed_embeddings: list[list[float]] = Field(default_factory=list)
+
+
+class IntentComputeResponse(BaseModel):
+    intent_vector: list[float] | None = None
+    confidence: float = 0.0
+    num_views: int = 0
+    session_labels: list[str] = Field(default_factory=list)
+
+
+# --- Feed Models ---
+
+class FeedRequest(BaseModel):
+    user_id: str
+    wardrobe_item_ids: list[str] = Field(default_factory=list)
+    taste_vector: list[float] = Field(default_factory=list)
+    taste_modes: list[list[float]] = Field(default_factory=list)
+    occasion_vectors: dict[str, list[float]] = Field(default_factory=dict)
+    trend_fingerprint: dict[str, float] = Field(default_factory=dict)
+    anti_taste_vector: list[float] = Field(default_factory=list)
+    price_tier: list[float] = Field(default_factory=lambda: [40.0, 200.0])
+    aesthetic_label: str = ""
+    skipped_item_ids: list[str] = Field(default_factory=list)
+    intent_vector: list[float] | None = None
+    intent_confidence: float = 0.0
+    style_attributes: dict[str, float] = Field(default_factory=dict)
+
+
+class FeedSection(BaseModel):
+    section_type: str
+    title: str
+    items: list[dict] = Field(default_factory=list)
+
+
+class FeedResponse(BaseModel):
+    completeYourCloset: list[dict] = Field(default_factory=list)
+    yourAesthetic: list[dict] = Field(default_factory=list)
+    completeYourOutfits: list[dict] = Field(default_factory=list)
+    bestPricesOnSaves: list[dict] = Field(default_factory=list)
+    occasionRows: list[dict] = Field(default_factory=list)
+    wardrobeStats: dict = Field(default_factory=dict)
+
+
+# --- Chat Models ---
+
+class ChatRequest(BaseModel):
+    messages: list[dict] = Field(default_factory=list)
+    wardrobe_item_ids: list[str] = Field(default_factory=list)
+    taste_vector: list[float] = Field(default_factory=list)
+    taste_modes: list[list[float]] = Field(default_factory=list)
+    occasion_vectors: dict[str, list[float]] = Field(default_factory=dict)
+    trend_fingerprint: dict[str, float] = Field(default_factory=dict)
+    anti_taste_vector: list[float] = Field(default_factory=list)
+    style_attributes: dict[str, float] = Field(default_factory=dict)
+    price_tier: list[float] = Field(default_factory=lambda: [40.0, 200.0])
+    aesthetic_attributes: dict = Field(default_factory=dict)
+
+
+# --- Evaluate Item V2 (with intent + purchase confidence) ---
+
+class EvaluateItemV2Request(BaseModel):
+    item_id: str
+    user_id: str
+    wardrobe_item_ids: list[str] = Field(default_factory=list)
+    taste_vector: list[float] = Field(default_factory=list)
+    intent_vector: list[float] | None = None
+    intent_confidence: float = 0.0
+
+
+class EvaluateItemV2Response(BaseModel):
+    taste_fit: float
+    intent_match: float | None = None
+    purchase_confidence: str = "LOW"  # HIGH / MEDIUM / LOW
+    unlock_count: int = 0
+    pairs_with: list[dict] = Field(default_factory=list)
+    explanation: str = ""
+    best_price: float = 0.0

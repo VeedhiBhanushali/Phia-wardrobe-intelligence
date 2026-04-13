@@ -29,6 +29,14 @@ def clean_item(item: dict) -> dict:
     return {k: v for k, v in item.items() if k != "embedding"}
 
 
+_BAD_IMAGE_TOKENS = {"fabric", "swatch", "detail", "close-up", "closeup", "texture", "sample"}
+
+def is_bundle_eligible(item: dict) -> bool:
+    """Exclude items whose title suggests a swatch, detail shot, or non-product image."""
+    title = item.get("title", "").lower()
+    return not any(tok in title for tok in _BAD_IMAGE_TOKENS)
+
+
 def build_negative_prototype(
     catalog: list[dict], skipped_item_ids: list[str]
 ) -> np.ndarray | None:
@@ -98,6 +106,10 @@ def build_outfit_suggestions(
     next-best pieces per slot for diversity.
     """
     if not anchor or not pool:
+        return []
+
+    pool = [p for p in pool if is_bundle_eligible(p)]
+    if not is_bundle_eligible(anchor):
         return []
 
     slots = _slots_for_outfit_anchor(anchor.get("slot", ""))
@@ -192,6 +204,7 @@ def build_occasion_sections_unified(
     price_tier: tuple[float, float],
     exclude_ids: set[str],
     per_section: int = 6,
+    style_attributes: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """FAISS + price + ranker path aligned with main recommendations."""
     if not occasion_vectors:
@@ -224,6 +237,7 @@ def build_occasion_sections_unified(
                 trend_fingerprint=trend_fp,
                 anti_taste_vector=anti_taste,
                 negative_prototype=negative_prototype,
+                style_attributes=style_attributes or {},
             )
             items_out: list[dict] = []
             for row in ranked:
@@ -262,6 +276,8 @@ def run_wardrobe_orchestration(
     aesthetic_label: str,
     skipped_item_ids: list[str],
     catalog: list[dict],
+    intent_vector: np.ndarray | None = None,
+    intent_confidence: float = 0.0,
 ) -> dict[str, Any]:
     """
     Full pipeline: main ranked list, gap pick, top picks, occasion sections,
@@ -298,6 +314,8 @@ def run_wardrobe_orchestration(
         trend_fingerprint=trend_fp,
         anti_taste_vector=anti_taste,
         negative_prototype=negative_proto,
+        intent_vector=intent_vector,
+        intent_confidence=intent_confidence,
     )
 
     top_trend = ""

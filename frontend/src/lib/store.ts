@@ -8,7 +8,10 @@ export interface TasteProfile {
   taste_modes?: number[][];
   occasion_vectors?: Record<string, number[]>;
   trend_fingerprint?: Record<string, number>;
+  display_trends?: Record<string, number>;
   anti_taste_vector?: number[];
+  style_attributes?: Record<string, number>;
+  style_summary?: Array<{ key: string; label: string; score: number; direction: string }>;
   aesthetic_attributes: Record<
     string,
     { label: string; confidence: number; scores: Record<string, number> }
@@ -50,6 +53,60 @@ export interface GapRec {
 export interface OutfitBundle {
   label: string;
   items: WardrobeItem[];
+}
+
+export interface SessionViewedItem {
+  item_id: string;
+  embedding: number[];
+}
+
+export interface ChatBlock {
+  type: "text" | "items" | "outfit_bundle";
+  content?: string;
+  items?: WardrobeItem[];
+  outfitBundle?: { items: WardrobeItem[]; title: string; occasion: string };
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  items?: WardrobeItem[];
+  outfitBundle?: {
+    items: WardrobeItem[];
+    title: string;
+    occasion: string;
+  };
+  blocks?: ChatBlock[];
+}
+
+export interface FeedData {
+  completeYourCloset: Array<{
+    item: WardrobeItem;
+    taste_score: number;
+    unlock_count: number;
+    explanation: string;
+  }>;
+  yourAesthetic: Array<{
+    item: WardrobeItem;
+    taste_score: number;
+    unlock_count: number;
+  }>;
+  completeYourOutfits: Array<{
+    wardrobe_items: WardrobeItem[];
+    catalog_addition: WardrobeItem | null;
+    occasion: string;
+    title: string;
+    rationale: string;
+    is_complete: boolean;
+    harmony_score: number;
+  }>;
+  bestPricesOnSaves: Array<{
+    item: WardrobeItem;
+    price: number;
+    savings_ratio: number;
+  }>;
+  occasionRows: OccasionSection[];
+  wardrobeStats: Record<string, unknown>;
 }
 
 const STORAGE_KEYS = {
@@ -123,6 +180,14 @@ export function useAppState() {
   const [skippedItemIds, setSkippedItemIdsState] = useState<string[]>([]);
   const [userId, setUserIdState] = useState<string>("");
   const [isHydrated, setIsHydrated] = useState(false);
+
+  // Session state (not persisted — resets on reload)
+  const [sessionViewedItems, setSessionViewedItems] = useState<SessionViewedItem[]>([]);
+  const [sessionIntentVector, setSessionIntentVector] = useState<number[] | null>(null);
+  const [sessionIntentConfidence, setSessionIntentConfidence] = useState(0);
+  const [sessionIntentLabels, setSessionIntentLabels] = useState<string[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatPreloadItemId, setChatPreloadItemId] = useState<string | null>(null);
 
   useEffect(() => {
     const storedProfile = safeGet<unknown>(STORAGE_KEYS.tasteProfile, null);
@@ -205,11 +270,25 @@ export function useAppState() {
     });
   }, []);
 
+  const addViewedItem = useCallback((item: SessionViewedItem) => {
+    setSessionViewedItems((prev) => {
+      if (prev.some((v) => v.item_id === item.item_id)) return prev;
+      const next = [...prev, item].slice(-10); // max 10
+      return next;
+    });
+  }, []);
+
   const clearAll = useCallback(() => {
     setTasteProfileState(null);
     setWardrobeItemsState([]);
     setSkippedItemIdsState([]);
     setUserIdState("");
+    setSessionViewedItems([]);
+    setSessionIntentVector(null);
+    setSessionIntentConfidence(0);
+    setSessionIntentLabels([]);
+    setChatOpen(false);
+    setChatPreloadItemId(null);
     Object.values(STORAGE_KEYS).forEach((k) => {
       if (typeof window !== "undefined") localStorage.removeItem(k);
     });
@@ -227,5 +306,18 @@ export function useAppState() {
     userId,
     isHydrated,
     clearAll,
+    // Session state
+    sessionViewedItems,
+    addViewedItem,
+    sessionIntentVector,
+    setSessionIntentVector,
+    sessionIntentConfidence,
+    setSessionIntentConfidence,
+    sessionIntentLabels,
+    setSessionIntentLabels,
+    chatOpen,
+    setChatOpen,
+    chatPreloadItemId,
+    setChatPreloadItemId,
   };
 }

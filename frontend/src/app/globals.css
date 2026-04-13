@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 @theme inline {
   --font-sans: var(--font-inter);
   --font-serif: var(--font-playfair);
+  --animate-blink: blink 1s step-end infinite;
 
   --color-phia-black: #1A1A1A;
   --color-phia-gray-900: #374151;

@@ -117,6 +117,7 @@ def compute_trend_fingerprint(
     """
     Cosine similarity between the user's taste vector and every trend
     archetype.  Returns a dict sorted by descending similarity.
+    Used internally for ranking, anti-taste, and trend boost scoring.
     """
     names, embeddings = get_trend_embeddings()
     tv = np.array(taste_vector, dtype=np.float32)
@@ -128,6 +129,39 @@ def compute_trend_fingerprint(
         zip(names, sims), key=lambda kv: kv[1], reverse=True
     ))
     return fingerprint
+
+
+def top_coherent_trends(
+    trend_fingerprint: dict[str, float],
+    max_trends: int = 3,
+) -> dict[str, float]:
+    """
+    Filter a full fingerprint to only the trends with similarity at least
+    1 std-dev above the mean.  Caps at *max_trends* and guarantees at
+    least 1 result.  Use this for user-facing display (aesthetic card,
+    profile) — not for internal ranking which should use the full fingerprint.
+    """
+    if not trend_fingerprint:
+        return {}
+
+    scores = list(trend_fingerprint.values())
+    mean_s = float(np.mean(scores))
+    std_s = float(np.std(scores))
+    threshold = mean_s + std_s
+
+    result: dict[str, float] = {}
+    for name, sim in trend_fingerprint.items():
+        if sim >= threshold and len(result) < max_trends:
+            result[name] = sim
+        elif len(result) == 0 and sim < threshold:
+            result[name] = sim
+            break
+
+    if not result:
+        first = next(iter(trend_fingerprint.items()))
+        result[first[0]] = first[1]
+
+    return result
 
 
 def compute_anti_taste_vector(

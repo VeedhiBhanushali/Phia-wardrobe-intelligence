@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
-from app.api.routes import taste, recommendations, catalog, wardrobe, events, shopper
+from app.api.routes import taste, recommendations, catalog, wardrobe, events, shopper, intent, chat, feed
 
 settings = get_settings()
 
@@ -33,6 +33,9 @@ app.include_router(catalog.router)
 app.include_router(wardrobe.router)
 app.include_router(events.router)
 app.include_router(shopper.router)
+app.include_router(intent.router)
+app.include_router(chat.router)
+app.include_router(feed.router)
 
 
 images_dir = Path("data/images")

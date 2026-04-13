@@ -9,11 +9,218 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from io import BytesIO
 
 import numpy as np
+
+
+# ── Metadata enrichment ──────────────────────────────────────────────
+
+_ITEM_TYPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("dress",       re.compile(r"\bdress(es)?\b", re.I)),
+    ("jumpsuit",    re.compile(r"\bjumpsuit\b", re.I)),
+    ("romper",      re.compile(r"\bromper\b", re.I)),
+    ("bodysuit",    re.compile(r"\bbodysuit\b", re.I)),
+    ("blouse",      re.compile(r"\bblouse\b", re.I)),
+    ("shirt",       re.compile(r"\b(shirt|button[- ]?down|oxford)\b", re.I)),
+    ("camisole",    re.compile(r"\b(cami(sole)?|slip top)\b", re.I)),
+    ("tank",        re.compile(r"\btank(\s?top)?\b", re.I)),
+    ("tee",         re.compile(r"\b(tee|t-shirt|tshirt)\b", re.I)),
+    ("crop top",    re.compile(r"\bcrop\s?top\b", re.I)),
+    ("corset",      re.compile(r"\bcorset\b", re.I)),
+    ("sweater",     re.compile(r"\b(sweater|knit|pullover|crewneck|turtleneck|cardigan)\b", re.I)),
+    ("hoodie",      re.compile(r"\b(hoodie|sweatshirt)\b", re.I)),
+    ("polo",        re.compile(r"\bpolo\b", re.I)),
+    ("vest",        re.compile(r"\bvest\b", re.I)),
+    ("top",         re.compile(r"\btop\b", re.I)),
+    ("jeans",       re.compile(r"\b(jeans|denim\s+pant)\b", re.I)),
+    ("trousers",    re.compile(r"\b(trousers|pants|chinos|joggers|palazzo|bermuda)\b", re.I)),
+    ("skirt",       re.compile(r"\b(skirt|skort)\b", re.I)),
+    ("shorts",      re.compile(r"\bshorts\b", re.I)),
+    ("leggings",    re.compile(r"\b(leggings|tights)\b", re.I)),
+    ("coat",        re.compile(r"\b(coat|trench|overcoat|duster)\b", re.I)),
+    ("jacket",      re.compile(r"\b(jacket|bomber|puffer|biker|trucker)\b", re.I)),
+    ("blazer",      re.compile(r"\bblazer\b", re.I)),
+    ("sneakers",    re.compile(r"\b(sneaker|trainer|samba|new balance|nb\s?\d)\b", re.I)),
+    ("boots",       re.compile(r"\bboots?\b", re.I)),
+    ("heels",       re.compile(r"\b(heel|pump|stiletto|kitten heel)\b", re.I)),
+    ("sandals",     re.compile(r"\b(sandal|slide|flip\s?flop|mule)\b", re.I)),
+    ("loafers",     re.compile(r"\b(loafer|oxford shoe|derby)\b", re.I)),
+    ("flats",       re.compile(r"\b(flat|ballet)\b", re.I)),
+    ("clogs",       re.compile(r"\b(clog|birkenstock)\b", re.I)),
+    ("tote",        re.compile(r"\btote\b", re.I)),
+    ("crossbody",   re.compile(r"\bcrossbody\b", re.I)),
+    ("clutch",      re.compile(r"\bclutch\b", re.I)),
+    ("backpack",    re.compile(r"\bbackpack\b", re.I)),
+    ("bag",         re.compile(r"\b(bag|satchel|purse|hobo|bucket bag|shoulder bag)\b", re.I)),
+    ("necklace",    re.compile(r"\bnecklace\b", re.I)),
+    ("earrings",    re.compile(r"\bearring\b", re.I)),
+    ("bracelet",    re.compile(r"\b(bracelet|bangle|cuff)\b", re.I)),
+    ("ring",        re.compile(r"\bring\b", re.I)),
+    ("watch",       re.compile(r"\bwatch\b", re.I)),
+    ("sunglasses",  re.compile(r"\b(sunglasses|shades)\b", re.I)),
+    ("belt",        re.compile(r"\bbelt\b", re.I)),
+    ("scarf",       re.compile(r"\b(scarf|stole|muffler)\b", re.I)),
+    ("hat",         re.compile(r"\b(hat|cap|beanie|beret)\b", re.I)),
+    ("gloves",      re.compile(r"\bgloves?\b", re.I)),
+]
+
+# Canonical item_type synonyms: query alias → catalog canonical label.
+# When the LLM or user says "gown" we match catalog items tagged "dress".
+ITEM_TYPE_SYNONYMS: dict[str, str] = {
+    "gown": "dress", "mini dress": "dress", "midi dress": "dress",
+    "maxi dress": "dress", "cocktail dress": "dress", "slip dress": "dress",
+    "sundress": "dress", "wrap dress": "dress", "bodycon": "dress",
+    "sheath": "dress", "a-line dress": "dress",
+    "jean": "jeans", "denim": "jeans",
+    "pant": "trousers", "trouser": "trousers", "chino": "trousers",
+    "jogger": "trousers", "palazzo": "trousers",
+    "tshirt": "tee", "t-shirt": "tee",
+    "cami": "camisole",
+    "pullover": "sweater", "knit": "sweater", "crewneck": "sweater",
+    "turtleneck": "sweater", "cardigan": "sweater",
+    "sweatshirt": "hoodie",
+    "puffer": "jacket", "bomber": "jacket",
+    "trench": "coat", "overcoat": "coat", "duster": "coat",
+    "trainer": "sneakers", "sneaker": "sneakers",
+    "boot": "boots", "ankle boot": "boots", "knee boot": "boots",
+    "pump": "heels", "stiletto": "heels",
+    "sandal": "sandals", "slide": "sandals", "mule": "sandals",
+    "loafer": "loafers",
+    "ballet flat": "flats",
+    "purse": "bag", "handbag": "bag", "satchel": "bag",
+    "shoulder bag": "bag", "bucket bag": "bag", "hobo": "bag",
+    "earring": "earrings",
+    "bangle": "bracelet", "cuff": "bracelet",
+    "beanie": "hat", "cap": "hat", "beret": "hat",
+    "stole": "scarf", "muffler": "scarf",
+    "shade": "sunglasses",
+    "glove": "gloves",
+}
+
+_COLOR_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("black",       re.compile(r"\bblack\b", re.I)),
+    ("white",       re.compile(r"\b(white|ivory|cream|ecru|off[- ]?white)\b", re.I)),
+    ("navy",        re.compile(r"\bnavy\b", re.I)),
+    ("blue",        re.compile(r"\bblue\b", re.I)),
+    ("red",         re.compile(r"\b(red|scarlet|crimson|cherry)\b", re.I)),
+    ("burgundy",    re.compile(r"\b(burgundy|maroon|wine|oxblood|merlot)\b", re.I)),
+    ("pink",        re.compile(r"\b(pink|rose|blush|fuchsia|magenta|dusty rose)\b", re.I)),
+    ("green",       re.compile(r"\b(green|sage|olive|emerald|forest|khaki|moss)\b", re.I)),
+    ("yellow",      re.compile(r"\b(yellow|mustard|gold(en)?|lemon)\b", re.I)),
+    ("orange",      re.compile(r"\b(orange|rust|terracotta|burnt|tangerine)\b", re.I)),
+    ("purple",      re.compile(r"\b(purple|violet|plum|lavender|lilac|mauve)\b", re.I)),
+    ("brown",       re.compile(r"\b(brown|chocolate|espresso|cocoa|coffee|cognac|caramel)\b", re.I)),
+    ("tan",         re.compile(r"\b(tan|camel|beige|khaki|nude|sand|stone|taupe|oat)\b", re.I)),
+    ("grey",        re.compile(r"\b(gr[ae]y|charcoal|silver|slate)\b", re.I)),
+    ("metallic",    re.compile(r"\b(metallic|gold|silver|shimmer|sequin|glitter)\b", re.I)),
+    ("denim",       re.compile(r"\bdenim\b", re.I)),
+    ("floral",      re.compile(r"\bfloral\b", re.I)),
+    ("print",       re.compile(r"\b(print|pattern|stripe|plaid|check|houndstooth|leopard|polka)\b", re.I)),
+]
+
+# Color family groups: when a user searches for "red", also match items
+# tagged as "burgundy" or "orange" (warm reds).  Used for relaxed fallback.
+COLOR_FAMILIES: dict[str, list[str]] = {
+    "red":      ["red", "burgundy", "orange"],
+    "burgundy": ["burgundy", "red"],
+    "pink":     ["pink", "red"],
+    "blue":     ["blue", "navy", "denim"],
+    "navy":     ["navy", "blue", "denim"],
+    "green":    ["green"],
+    "orange":   ["orange", "red"],
+    "purple":   ["purple", "pink"],
+    "brown":    ["brown", "tan"],
+    "tan":      ["tan", "brown"],
+    "white":    ["white"],
+    "black":    ["black"],
+    "grey":     ["grey", "metallic"],
+    "yellow":   ["yellow", "orange"],
+    "metallic": ["metallic", "grey", "yellow"],
+    "denim":    ["denim", "blue", "navy"],
+}
+
+_OCCASION_KEYWORDS: dict[str, list[str]] = {
+    "casual":   ["casual", "everyday", "relaxed", "weekend", "comfort"],
+    "work":     ["office", "work", "professional", "formal", "tailored", "business"],
+    "evening":  ["evening", "date", "night", "cocktail", "party", "club", "sexy"],
+    "special":  ["wedding", "gala", "special", "event", "prom", "graduation"],
+    "active":   ["sport", "athletic", "gym", "yoga", "running", "activewear"],
+    "vacation": ["beach", "resort", "vacation", "travel", "summer", "tropical"],
+}
+
+
+def normalize_item_type(raw: str) -> str:
+    """Resolve a query item_type through the synonym table to canonical form."""
+    key = raw.lower().strip()
+    return ITEM_TYPE_SYNONYMS.get(key, key)
+
+
+def expand_color_family(colors: list[str]) -> list[str]:
+    """Expand a list of query colors to include related color families."""
+    expanded: set[str] = set()
+    for c in colors:
+        c_lower = c.lower().strip()
+        expanded.add(c_lower)
+        for related in COLOR_FAMILIES.get(c_lower, []):
+            expanded.add(related)
+    return list(expanded)
+
+
+def _detect_item_type(text: str) -> str:
+    """First-match item type from title/category text."""
+    for label, pat in _ITEM_TYPE_PATTERNS:
+        if pat.search(text):
+            return label
+    return "other"
+
+
+def _detect_colors(text: str) -> list[str]:
+    """All matching color families from title/description text."""
+    found: list[str] = []
+    for label, pat in _COLOR_PATTERNS:
+        if pat.search(text):
+            found.append(label)
+    return found or ["unknown"]
+
+
+def _detect_occasions(text: str) -> list[str]:
+    text_lower = text.lower()
+    found: list[str] = []
+    for occasion, keywords in _OCCASION_KEYWORDS.items():
+        if any(kw in text_lower for kw in keywords):
+            found.append(occasion)
+    return found or ["casual"]
+
+
+def enrich_catalog_metadata(catalog: list[dict]) -> list[dict]:
+    """Add item_type, colors, and occasions to every catalog item in-place."""
+    for item in catalog:
+        search_text = " ".join(filter(None, [
+            item.get("title", ""),
+            item.get("category", ""),
+            item.get("colour", ""),
+            item.get("dominant_color", ""),
+            item.get("clip_description", ""),
+        ]))
+
+        if not item.get("item_type"):
+            item["item_type"] = _detect_item_type(search_text)
+
+        if not item.get("colors"):
+            explicit_color = item.get("colour") or item.get("dominant_color")
+            detected = _detect_colors(search_text)
+            if explicit_color and explicit_color.lower() not in detected:
+                detected.insert(0, explicit_color.lower())
+            item["colors"] = detected
+
+        if not item.get("occasions"):
+            item["occasions"] = _detect_occasions(search_text)
+
+    return catalog
 
 
 def build_mock_catalog():
@@ -58,43 +265,46 @@ def build_serpapi_catalog():
     categories = {
         "tops": [
             "COS silk blouse women", "Aritzia babaton top women",
-            "Massimo Dutti fitted shirt women", "Zara satin camisole women",
-            "Reformation linen top women", "Theory cashmere sweater women",
+            "Zara satin camisole women", "Reformation linen top women",
             "Mango ribbed knit top women", "H&M premium cotton tee women",
-            "Sandro lace trim blouse women", "Reiss structured knit top women",
+            "Edikted corset top women", "Princess Polly crop top women",
+            "White Fox tube top women", "Skims long sleeve top women",
+            "Alo Yoga ribbed tank top women", "Abercrombie bodysuit women",
         ],
         "bottoms": [
             "Agolde jeans women", "COS tailored trousers women",
             "Zara pleated midi skirt women", "Aritzia wide leg pants women",
-            "Mango leather effect pants women", "Massimo Dutti linen trousers women",
-            "Reformation high rise jeans women", "Reiss pencil skirt women",
+            "Mango leather effect pants women", "Reformation high rise jeans women",
             "H&M premium satin skirt women", "AllSaints cargo pants women",
+            "Princess Polly mini skirt women", "Edikted low rise pants women",
+            "White Fox cargo pants women", "Abercrombie linen pants women",
         ],
         "outerwear": [
             "COS wool coat women", "Aritzia superpuff jacket women",
-            "Massimo Dutti camel blazer women", "Zara oversized blazer women",
-            "Mango leather jacket women", "AllSaints biker jacket women",
-            "Reiss wool blend coat women", "Theory tailored blazer women",
-            "H&M premium trench coat women", "Sandro tweed jacket women",
+            "Zara oversized blazer women", "Mango leather jacket women",
+            "AllSaints biker jacket women", "H&M premium trench coat women",
+            "Princess Polly puffer jacket women", "Meshki blazer women",
+            "Edikted faux fur jacket women", "Alo Yoga hoodie women",
+            "Abercrombie bomber jacket women",
         ],
         "shoes": [
-            "Aeyde ballet flat women", "Adidas Samba sneakers women",
-            "Mango leather loafers women", "Zara strappy heeled sandal women",
-            "Steve Madden platform boots women", "Sam Edelman pointed toe flat women",
-            "COS leather ankle boots women", "New Balance 550 women",
-            "Massimo Dutti kitten heel women",
+            "Adidas Samba sneakers women", "Mango leather loafers women",
+            "Zara strappy heeled sandal women", "Steve Madden platform boots women",
+            "Sam Edelman pointed toe flat women", "COS leather ankle boots women",
+            "New Balance 550 women", "Princess Polly platform heels women",
+            "Meshki heeled sandals women",
         ],
         "bags": [
             "Polene leather bag women", "Mansur Gavriel bucket bag women",
             "COS quilted crossbody bag women", "Mango leather tote bag women",
             "Zara minimalist shoulder bag women", "Coach tabby bag women",
-            "JW Pei shoulder bag women", "DeMellier mini bag women",
+            "JW Pei shoulder bag women", "Meshki mini bag women",
         ],
         "accessories": [
             "Mejuri gold layered necklace women", "Missoma pearl earrings women",
             "COS silk scarf women", "Mango oversized sunglasses women",
-            "Monica Vinader bracelet women", "Zara chain link necklace women",
-            "Mango leather belt women", "COS cashmere beanie women",
+            "Zara chain link necklace women", "Mango leather belt women",
+            "Skims accessories women", "Oh Polly jewelry women",
         ],
     }
 
@@ -384,6 +594,15 @@ def main():
         catalog = build_huggingface_catalog()
 
     from app.core.candidates import build_index, save_index
+
+    print("Enriching catalog metadata (item_type, colors, occasions)...")
+    enrich_catalog_metadata(catalog)
+
+    type_counts: dict[str, int] = {}
+    for item in catalog:
+        t = item.get("item_type", "other")
+        type_counts[t] = type_counts.get(t, 0) + 1
+    print(f"  Item types: {dict(sorted(type_counts.items(), key=lambda x: -x[1]))}")
 
     print(f"Building FAISS index for {len(catalog)} items...")
     index = build_index(catalog)

@@ -36,7 +36,7 @@ def test_unlock_gap_vs_filled():
     total = 0
 
     for profile_key, profile in DEMO_WARDROBES.items():
-        if profile_key == "empty":
+        if profile_key == "cold_start":
             continue
 
         wardrobe = [catalog_by_id[iid] for iid in profile["item_ids"] if iid in catalog_by_id]
@@ -111,7 +111,8 @@ def test_compatibility_positive_for_complements():
             total += 1
             score = compatibility_score(
                 top["embedding"], bottom["embedding"],
-                top["slot"], bottom["slot"]
+                top["slot"], bottom["slot"],
+                top.get("dominant_color", ""), bottom.get("dominant_color", ""),
             )
             ok = score > 0
             if ok:
@@ -136,7 +137,8 @@ def test_same_slot_zero_compat():
             total += 1
             score = compatibility_score(
                 tops[i]["embedding"], tops[j]["embedding"],
-                tops[i]["slot"], tops[j]["slot"]
+                tops[i]["slot"], tops[j]["slot"],
+                tops[i].get("dominant_color", ""), tops[j].get("dominant_color", ""),
             )
             if score == 0.0:
                 passed += 1

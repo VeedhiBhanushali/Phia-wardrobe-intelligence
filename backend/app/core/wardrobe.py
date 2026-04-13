@@ -106,22 +106,25 @@ def blend_vectors(
     """
     Blend taste vector and wardrobe embedding based on save count.
 
+    Conservative schedule: taste vector retains majority weight at low
+    save counts to prevent cross-modal averaging from diluting signal.
+
     | Saves | Taste | Wardrobe |
     |-------|-------|----------|
     | 0     | 100%  | 0%       |
-    | 1-4   | 70%   | 30%      |
-    | 5-14  | 40%   | 60%      |
-    | 15+   | 20%   | 80%      |
+    | 1-4   | 85%   | 15%      |
+    | 5-14  | 65%   | 35%      |
+    | 15+   | 45%   | 55%      |
     """
     if wardrobe_embedding is None or save_count == 0:
         return taste_vector
 
     if save_count <= 4:
-        taste_weight, wardrobe_weight = 0.7, 0.3
+        taste_weight, wardrobe_weight = 0.85, 0.15
     elif save_count <= 14:
-        taste_weight, wardrobe_weight = 0.4, 0.6
+        taste_weight, wardrobe_weight = 0.65, 0.35
     else:
-        taste_weight, wardrobe_weight = 0.2, 0.8
+        taste_weight, wardrobe_weight = 0.45, 0.55
 
     blended = taste_weight * taste_vector + wardrobe_weight * wardrobe_embedding
     norm = np.linalg.norm(blended)

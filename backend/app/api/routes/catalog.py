@@ -90,7 +90,10 @@ async def taste_search(req: TasteSearchRequest):
 
 
 @router.get("/item/{item_id}")
-async def get_catalog_item(item_id: str):
+async def get_catalog_item(
+    item_id: str,
+    include_embedding: bool = Query(False, description="Include CLIP embedding vector"),
+):
     """Get a single catalog item by ID."""
     try:
         _, catalog = load_index()
@@ -100,5 +103,8 @@ async def get_catalog_item(item_id: str):
     item = next((i for i in catalog if i["item_id"] == item_id), None)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+
+    if include_embedding:
+        return dict(item)
 
     return {k: v for k, v in item.items() if k != "embedding"}

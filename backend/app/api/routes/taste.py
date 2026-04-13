@@ -4,11 +4,18 @@ from io import BytesIO
 from uuid import uuid4
 import numpy as np
 
-from app.core.taste import extract_taste_profile, update_taste_profile, extract_attributes
-from app.core.trends import compute_trend_fingerprint
+from app.core.taste import (
+    extract_taste_profile, update_taste_profile, extract_attributes,
+    update_style_attributes, style_attribute_summary,
+)
+from app.core.clip_encoder import get_encoder
+from app.core.trends import compute_trend_fingerprint, top_coherent_trends
 from app.core.candidates import load_index
 from app.data.pinterest import scrape_board
-from app.db.models import TasteUpdateRequest, TasteUpdateResponse
+from app.db.models import (
+    TasteUpdateRequest, TasteUpdateResponse,
+    TasteDismissRequest, TasteDismissResponse,
+)
 
 router = APIRouter(prefix="/api/taste", tags=["taste"])
 
@@ -66,9 +73,12 @@ async def extract_taste(
         "taste_modes": profile["taste_modes"],
         "occasion_vectors": profile["occasion_vectors"],
         "trend_fingerprint": profile["trend_fingerprint"],
+        "display_trends": profile.get("display_trends", profile["trend_fingerprint"]),
         "anti_taste_vector": profile["anti_taste_vector"],
         "aesthetic_attributes": profile["aesthetic_attributes"],
         "price_tier": profile["price_tier"],
+        "style_attributes": profile.get("style_attributes", {}),
+        "style_summary": profile.get("style_summary", []),
     }
 
 
@@ -101,13 +111,62 @@ async def update_taste(req: TasteUpdateRequest):
         save_count=req.save_count,
     )
 
+    encoder = get_encoder()
+    new_style_attrs = update_style_attributes(
+        current_attributes=req.style_attributes,
+        item_embedding=item_embedding,
+        encoder=encoder,
+        save_count=req.save_count,
+        direction=1.0,
+    )
+    new_style_summary = style_attribute_summary(new_style_attrs)
+
     attrs = extract_attributes(new_vector)
     trend_fp = compute_trend_fingerprint(new_vector)
+    display_trends = top_coherent_trends(trend_fp)
     price_tier = [float(item.get("price", 40.0) * 0.6), float(item.get("price", 200.0) * 1.4)]
 
     return TasteUpdateResponse(
         taste_vector=new_vector.tolist(),
         trend_fingerprint=trend_fp,
+        display_trends=display_trends,
         aesthetic_attributes=attrs,
         price_tier=price_tier,
+        style_attributes=new_style_attrs,
+        style_summary=new_style_summary,
+    )
+
+
+@router.post("/dismiss", response_model=TasteDismissResponse)
+async def dismiss_item(req: TasteDismissRequest):
+    """
+    Update style_attributes when a user dismisses (X) an item.
+
+    Shifts the profile away from the dismissed item's style signals,
+    strengthening avoidance of that aesthetic over time.
+    """
+    try:
+        _, catalog = load_index()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Catalog not built yet")
+
+    item = next((i for i in catalog if i["item_id"] == req.item_id), None)
+    if not item or "embedding" not in item:
+        raise HTTPException(status_code=404, detail="Item not found in catalog")
+
+    item_embedding = np.array(item["embedding"], dtype=np.float32)
+    encoder = get_encoder()
+
+    new_style_attrs = update_style_attributes(
+        current_attributes=req.style_attributes,
+        item_embedding=item_embedding,
+        encoder=encoder,
+        save_count=req.dismiss_count,
+        direction=-1.0,
+    )
+    new_style_summary = style_attribute_summary(new_style_attrs)
+
+    return TasteDismissResponse(
+        style_attributes=new_style_attrs,
+        style_summary=new_style_summary,
     )

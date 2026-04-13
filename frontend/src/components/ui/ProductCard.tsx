@@ -77,7 +77,8 @@ export function ProductCard({
 
         {tasteFit !== undefined && (
           <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-white text-[10px] font-medium">
-            {Math.round(tasteFit * 100)}% match
+            {tasteFit >= 0.92 ? "Strong" : tasteFit >= 0.80 ? "Good" : "Fair"}{" "}
+            <span className="opacity-70">{Math.round(tasteFit * 100)}%</span>
           </div>
         )}
 

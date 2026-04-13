@@ -81,6 +81,8 @@ export function TasteOnboarding({ onComplete }: TasteOnboardingProps) {
         occasion_vectors: result.occasion_vectors ?? {},
         trend_fingerprint: result.trend_fingerprint ?? {},
         anti_taste_vector: result.anti_taste_vector ?? [],
+        style_attributes: result.style_attributes ?? {},
+        style_summary: result.style_summary ?? [],
         aesthetic_attributes: result.aesthetic_attributes ?? {},
         price_tier: result.price_tier ?? [0, 0],
       };

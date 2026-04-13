@@ -43,6 +43,11 @@ class Settings(BaseSettings):
         validation_alias="OPENAI_API_KEY",
     )
 
+    anthropic_api_key: str = Field(
+        default="",
+        validation_alias="ANTHROPIC_API_KEY",
+    )
+
     cors_origins: list[str] = ["http://localhost:3000"]
 
 

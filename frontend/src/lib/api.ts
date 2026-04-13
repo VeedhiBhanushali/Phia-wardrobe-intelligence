@@ -35,6 +35,8 @@ async function request<T>(
   return res.json();
 }
 
+const API_SSE_BASE = API_BASE;
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
@@ -58,13 +60,30 @@ export const api = {
       taste_vector: number[];
       item_id: string;
       save_count: number;
+      style_attributes?: Record<string, number>;
     }) =>
       request<{
         taste_vector: number[];
         trend_fingerprint: Record<string, number>;
+        display_trends: Record<string, number>;
         aesthetic_attributes: Record<string, unknown>;
         price_tier: number[];
+        style_attributes: Record<string, number>;
+        style_summary: Array<{ key: string; label: string; score: number; direction: string }>;
       }>("/api/taste/update", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    dismiss: (data: {
+      item_id: string;
+      style_attributes?: Record<string, number>;
+      dismiss_count?: number;
+    }) =>
+      request<{
+        style_attributes: Record<string, number>;
+        style_summary: Array<{ key: string; label: string; score: number; direction: string }>;
+      }>("/api/taste/dismiss", {
         method: "POST",
         body: JSON.stringify(data),
       }),
@@ -99,6 +118,47 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+
+    evaluateItemV2: (data: {
+      item_id: string;
+      user_id: string;
+      wardrobe_item_ids: string[];
+      taste_vector: number[];
+      intent_vector?: number[] | null;
+      intent_confidence?: number;
+    }) =>
+      request<{
+        taste_fit: number;
+        intent_match: number | null;
+        purchase_confidence: string;
+        unlock_count: number;
+        pairs_with: Array<Record<string, unknown>>;
+        explanation: string;
+        best_price: number;
+      }>("/api/recommendations/evaluate-item-v2", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    feed: (data: {
+      user_id: string;
+      wardrobe_item_ids: string[];
+      taste_vector: number[];
+      taste_modes?: number[][];
+      occasion_vectors?: Record<string, number[]>;
+      trend_fingerprint?: Record<string, number>;
+      anti_taste_vector?: number[];
+      price_tier?: number[];
+      aesthetic_label?: string;
+      skipped_item_ids?: string[];
+      intent_vector?: number[] | null;
+      intent_confidence?: number;
+      style_attributes?: Record<string, number>;
+    }) =>
+      request("/api/recommendations/feed", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
 
   catalog: {
@@ -111,7 +171,10 @@ export const api = {
       return request(`/api/catalog/search?${searchParams}`);
     },
 
-    getItem: (id: string) => request(`/api/catalog/item/${id}`),
+    getItem: (id: string, includeEmbedding?: boolean) =>
+      request(
+        `/api/catalog/item/${id}${includeEmbedding ? "?include_embedding=true" : ""}`
+      ),
 
     tasteSearch: (data: {
       taste_vector: number[];
@@ -175,6 +238,39 @@ export const api = {
         items: Record<string, unknown>[];
       }>("/api/shopper/plan", {
         method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+
+  intent: {
+    compute: (data: { viewed_embeddings: number[][] }) =>
+      request<{
+        intent_vector: number[] | null;
+        confidence: number;
+        num_views: number;
+        session_labels: string[];
+      }>("/api/intent/compute", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+
+  chat: {
+    stream: (data: {
+      messages: Array<{ role: string; content: string }>;
+      wardrobe_item_ids: string[];
+      taste_vector: number[];
+      taste_modes?: number[][];
+      occasion_vectors?: Record<string, number[]>;
+      trend_fingerprint?: Record<string, number>;
+      anti_taste_vector?: number[];
+      style_attributes?: Record<string, number>;
+      price_tier?: number[];
+      aesthetic_attributes?: Record<string, unknown>;
+    }) =>
+      fetch(`${API_SSE_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       }),
   },

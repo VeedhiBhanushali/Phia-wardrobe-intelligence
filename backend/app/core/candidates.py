@@ -1,7 +1,8 @@
 """
 Candidate generation via FAISS vector search.
 
-Handles index building, persistence, and gap-targeted retrieval.
+Handles index building, persistence, gap-targeted retrieval,
+and metadata-filtered intent-mode search.
 """
 
 import json
@@ -12,6 +13,7 @@ from app.config import get_settings
 
 _index: faiss.IndexFlatIP | None = None
 _catalog_items: list[dict] = []
+_catalog_summary: dict | None = None
 
 
 def build_index(items: list[dict]) -> faiss.IndexFlatIP:
@@ -46,7 +48,7 @@ def save_index(index: faiss.IndexFlatIP, items: list[dict], base_path: str | Non
 
 
 def load_index(base_path: str | None = None) -> tuple[faiss.IndexFlatIP, list[dict]]:
-    global _index, _catalog_items
+    global _index, _catalog_items, _catalog_summary
 
     if _index is not None:
         return _index, _catalog_items
@@ -66,7 +68,59 @@ def load_index(base_path: str | None = None) -> tuple[faiss.IndexFlatIP, list[di
     with open(catalog_path) as f:
         _catalog_items = json.load(f)
 
+    _ensure_metadata(_catalog_items)
+    _catalog_summary = _build_catalog_summary(_catalog_items)
+
     return _index, _catalog_items
+
+
+def _ensure_metadata(items: list[dict]) -> None:
+    """Backfill item_type/colors/occasions for catalogs built before enrichment."""
+    needs_enrichment = any("item_type" not in item for item in items)
+    if not needs_enrichment:
+        return
+    from app.data.catalog_builder import enrich_catalog_metadata
+    enrich_catalog_metadata(items)
+
+
+def _build_catalog_summary(items: list[dict]) -> dict:
+    """Pre-compute aggregate stats for the system prompt."""
+    type_counts: dict[str, int] = {}
+    color_counts: dict[str, int] = {}
+    brand_set: set[str] = set()
+    prices: list[float] = []
+
+    for item in items:
+        t = item.get("item_type", "other")
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+        for c in item.get("colors", []):
+            if c != "unknown":
+                color_counts[c] = color_counts.get(c, 0) + 1
+
+        brand = item.get("brand", "")
+        if brand:
+            brand_set.add(brand)
+
+        price = item.get("price", 0)
+        if price > 0:
+            prices.append(price)
+
+    return {
+        "total_items": len(items),
+        "item_types": dict(sorted(type_counts.items(), key=lambda x: -x[1])),
+        "colors": dict(sorted(color_counts.items(), key=lambda x: -x[1])),
+        "brands": sorted(brand_set),
+        "price_range": [min(prices), max(prices)] if prices else [0, 0],
+    }
+
+
+def get_catalog_summary() -> dict:
+    """Return cached catalog summary, loading index if needed."""
+    global _catalog_summary
+    if _catalog_summary is None:
+        load_index()
+    return _catalog_summary or {}
 
 
 def search(
@@ -97,6 +151,88 @@ def search(
 
 
 SLOT_PRIORITY = ["tops", "bottoms", "outerwear", "shoes", "bags", "accessories"]
+
+
+def search_with_filters(
+    query_vector: np.ndarray,
+    top_k: int = 10,
+    slots: list[str] | None = None,
+    item_type: str | None = None,
+    colors: list[str] | None = None,
+    exclude_ids: set[str] | None = None,
+    price_tier: tuple[float, float] | None = None,
+) -> tuple[list[dict], str]:
+    """
+    Staged intent-mode search with automatic fallback.
+
+    Stages (stops as soon as top_k results are found):
+      1. Exact: item_type + colors match (hard filter)
+      2. Relaxed color: item_type match + expanded color family
+      3. Type only: item_type match, any color
+      4. Semantic: pure FAISS similarity, no metadata filter
+
+    Returns (results, stage_used) so the caller can tell the user
+    what was matched vs. what was relaxed.
+    """
+    from app.data.catalog_builder import normalize_item_type, expand_color_family
+
+    settings = get_settings()
+    tolerance = settings.price_band_tolerance
+    exclude = exclude_ids or set()
+
+    canonical_type = normalize_item_type(item_type) if item_type else None
+    exact_colors = [c.lower().strip() for c in colors] if colors else None
+    expanded_colors = expand_color_family(exact_colors) if exact_colors else None
+
+    pool_size = max(top_k * 15, 300)
+    results = search(query_vector, top_k=pool_size)
+
+    def _base_filter(item: dict, score: float) -> bool:
+        if item.get("item_id") in exclude:
+            return False
+        if slots and item.get("slot") not in slots:
+            return False
+        if price_tier and not _in_price_band(item, price_tier, tolerance):
+            return False
+        return True
+
+    def _collect(type_filter: str | None, color_set: list[str] | None) -> list[dict]:
+        found: list[dict] = []
+        for item, score in results:
+            if not _base_filter(item, score):
+                continue
+            if type_filter and item.get("item_type", "other") != type_filter:
+                continue
+            if color_set:
+                item_colors = set(item.get("colors", []))
+                if not item_colors.intersection(color_set):
+                    continue
+            found.append({**item, "retrieval_score": score})
+            if len(found) >= top_k:
+                break
+        return found
+
+    # Stage 1: exact type + exact colors
+    if canonical_type and exact_colors:
+        exact = _collect(canonical_type, exact_colors)
+        if exact:
+            return exact, "exact"
+
+    # Stage 2: exact type + expanded color family
+    if canonical_type and expanded_colors:
+        relaxed_color = _collect(canonical_type, expanded_colors)
+        if relaxed_color:
+            return relaxed_color, "relaxed_color"
+
+    # Stage 3: type only, drop color constraint
+    if canonical_type:
+        type_only = _collect(canonical_type, None)
+        if type_only:
+            return type_only, "type_only"
+
+    # Stage 4: semantic-only fallback (slot filter still applies)
+    semantic = _collect(None, None)
+    return semantic, "semantic"
 
 
 def _in_price_band(
