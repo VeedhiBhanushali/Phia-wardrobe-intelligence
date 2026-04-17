@@ -6,7 +6,7 @@ import numpy as np
 
 from app.core.taste import (
     extract_taste_profile, update_taste_profile, extract_attributes,
-    update_style_attributes, style_attribute_summary,
+    update_style_attributes, style_attribute_summary, constrain_fit_axes,
 )
 from app.core.clip_encoder import get_encoder
 from app.core.trends import compute_trend_fingerprint, top_coherent_trends
@@ -112,6 +112,9 @@ async def update_taste(req: TasteUpdateRequest):
     )
 
     encoder = get_encoder()
+    attrs = extract_attributes(new_vector)
+    sil_label = attrs.get("silhouette", {}).get("label", "")
+
     new_style_attrs = update_style_attributes(
         current_attributes=req.style_attributes,
         item_embedding=item_embedding,
@@ -119,9 +122,8 @@ async def update_taste(req: TasteUpdateRequest):
         save_count=req.save_count,
         direction=1.0,
     )
+    constrain_fit_axes(new_style_attrs, sil_label)
     new_style_summary = style_attribute_summary(new_style_attrs)
-
-    attrs = extract_attributes(new_vector)
     trend_fp = compute_trend_fingerprint(new_vector)
     display_trends = top_coherent_trends(trend_fp)
     price_tier = [float(item.get("price", 40.0) * 0.6), float(item.get("price", 200.0) * 1.4)]
@@ -164,6 +166,7 @@ async def dismiss_item(req: TasteDismissRequest):
         save_count=req.dismiss_count,
         direction=-1.0,
     )
+    constrain_fit_axes(new_style_attrs, req.silhouette_label)
     new_style_summary = style_attribute_summary(new_style_attrs)
 
     return TasteDismissResponse(

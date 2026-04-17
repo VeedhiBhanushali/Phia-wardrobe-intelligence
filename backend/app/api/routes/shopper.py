@@ -173,11 +173,13 @@ async def shopper_plan(req: ShopperPlanRequest):
     if plan.max_price is not None and plan.max_price > 0:
         price_tier = (min(price_tier[0], plan.max_price * 0.3), float(plan.max_price))
 
+    trend_fp = req.trend_fingerprint if hasattr(req, 'trend_fingerprint') else None
     candidates = generate_candidates(
         taste_vector=query,
         gap_slots=slots,
         price_tier=price_tier,
         top_k=48,
+        trend_fingerprint=trend_fp,
     )
 
     anti = (

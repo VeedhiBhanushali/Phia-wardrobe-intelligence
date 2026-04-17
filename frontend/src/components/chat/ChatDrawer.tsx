@@ -78,35 +78,66 @@ function ChatProductCard({
 function OutfitBundleCard({
   items,
   title,
+  isItemSaved,
+  onSaveItem,
 }: {
   items: WardrobeItem[];
   title: string;
+  isItemSaved: (id: string) => boolean;
+  onSaveItem: (item: WardrobeItem) => void;
 }) {
   return (
     <div className="rounded-xl border border-phia-gray-200 p-3 mt-3">
-      <p className="text-xs font-medium text-phia-black mb-2">{title}</p>
-      <div className="flex gap-2 overflow-x-auto hide-scrollbar">
+      <div className="flex items-center gap-2 mb-2.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-phia-blue" />
+        <p className="text-xs font-medium text-phia-black">{title}</p>
+      </div>
+      <div className="flex gap-2.5 overflow-x-auto hide-scrollbar -mx-1 px-1 pb-1">
         {items.map((item, i) => (
           <motion.div
             key={item.item_id}
-            className="w-16 shrink-0"
+            className="w-[100px] shrink-0 flex flex-col"
             initial={{ opacity: 0, x: 12 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.25, delay: i * 0.07 }}
           >
-            <div className="aspect-[3/4] rounded-lg bg-phia-gray-100 overflow-hidden">
+            <div className="relative aspect-[3/4] rounded-lg bg-phia-gray-100 overflow-hidden">
               <img
                 src={resolveImageUrl(item.image_url)}
                 alt={item.title}
                 className="w-full h-full object-cover"
                 loading="lazy"
               />
+              <motion.button
+                whileTap={{ scale: 0.85 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSaveItem(item);
+                }}
+                className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-white/90 backdrop-blur-sm flex items-center justify-center shadow-sm"
+              >
+                <Bookmark
+                  size={10}
+                  className={isItemSaved(item.item_id) ? "text-phia-blue" : "text-phia-gray-400"}
+                  fill={isItemSaved(item.item_id) ? "currentColor" : "none"}
+                  strokeWidth={isItemSaved(item.item_id) ? 2 : 1.5}
+                />
+              </motion.button>
             </div>
-            <p className="text-[9px] text-phia-gray-400 mt-0.5 truncate">
-              {item.title}
-            </p>
+            <div className="mt-1 px-0.5">
+              <p className="text-[8px] tracking-[0.12em] uppercase text-phia-gray-400 leading-tight">
+                {item.brand}
+              </p>
+              <p className="text-[10px] text-phia-black truncate mt-0.5 leading-tight">
+                {item.title}
+              </p>
+              <p className="text-[10px] font-medium text-phia-black mt-0.5">
+                ${item.price}
+              </p>
+            </div>
           </motion.div>
         ))}
+        <div className="w-2 shrink-0" />
       </div>
     </div>
   );
@@ -171,11 +202,17 @@ function InlineItemStrip({
   onSaveItem: (item: WardrobeItem) => void;
 }) {
   const deduped = [...new Map(items.map((i) => [i.item_id, i])).values()];
+  const [expanded, setExpanded] = useState(false);
+  const INITIAL_SHOW = 4;
   if (!deduped.length) return null;
+
+  const visible = expanded ? deduped : deduped.slice(0, INITIAL_SHOW);
+  const hasMore = deduped.length > INITIAL_SHOW && !expanded;
+
   return (
     <div className="mt-3 mb-1 -mx-4">
       <div className="flex gap-2.5 overflow-x-auto hide-scrollbar px-4 pb-1">
-        {deduped.map((item, i) => (
+        {visible.map((item, i) => (
           <ChatProductCard
             key={item.item_id}
             item={item}
@@ -184,6 +221,14 @@ function InlineItemStrip({
             index={i}
           />
         ))}
+        {hasMore && (
+          <button
+            onClick={() => setExpanded(true)}
+            className="w-[120px] shrink-0 flex items-center justify-center rounded-xl border border-phia-gray-200 text-xs text-phia-gray-500 hover:bg-phia-gray-50 transition-colors"
+          >
+            +{deduped.length - INITIAL_SHOW} more
+          </button>
+        )}
         <div className="w-4 shrink-0" />
       </div>
     </div>
@@ -247,6 +292,8 @@ function MessageBubble({
                   key={i}
                   items={block.outfitBundle.items}
                   title={block.outfitBundle.title}
+                  isItemSaved={isItemSaved}
+                  onSaveItem={onSaveItem}
                 />
               );
             }
@@ -283,6 +330,8 @@ function MessageBubble({
           <OutfitBundleCard
             items={message.outfitBundle.items}
             title={message.outfitBundle.title}
+            isItemSaved={isItemSaved}
+            onSaveItem={onSaveItem}
           />
         )}
       </div>

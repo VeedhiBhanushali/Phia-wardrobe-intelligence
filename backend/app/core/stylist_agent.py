@@ -20,13 +20,13 @@ from app.core.candidates import (
     search_with_filters,
     get_catalog_summary,
 )
-from app.core.ranker import rank_candidates, rank_shopping, find_pairs, outfit_unlock_count
+from app.core.ranker import rank_candidates, rank_shopping, find_pairs, outfit_unlock_count, compatibility_score
 from app.core.wardrobe import (
     compute_slot_coverage,
     get_gap_slots,
     get_wardrobe_stats,
 )
-from app.core.outfit_builder import assemble_outfit
+from app.core.outfit_builder import assemble_outfit, curate_outfit_from_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -104,15 +104,36 @@ Items:
 TASTE: {silhouette} / {color_story} / {formality} / ${price_tier[0]:.0f} to ${price_tier[1]:.0f}
 Trends: {', '.join(top_trends) if top_trends else 'n/a'}
 
+TOOL ROUTING (follow strictly):
+- "build me a work outfit", "complete look for X", "what should I wear to Y": use curate_outfit. This retrieves candidates per slot, filters by occasion, and scores the combination jointly so everything goes together. Never use multiple search_catalog calls to assemble an outfit.
+- "find me a blazer", "show me black boots", single-item requests: use search_catalog.
+- "add a blazer to that outfit", follow-ups referencing a previous outfit: use search_catalog with a specific garment query. The tool will automatically score results against the last outfit for compatibility.
+- "what's in my closet", "what am I missing": use analyze_wardrobe.
+- build_outfit is for wardrobe-only outfits (what can I wear from what I own).
+
+TEXT AND CARD CONTRACT (critical):
+- You may ONLY describe items that the tools actually returned. The tool output lists every item by name and brand. Do not mention any item, brand, or product that is not in that list.
+- Write your explanation FIRST, then the cards appear after. Your text should reference items by the exact names from the tool results.
+- If a tool returns items, always write at least 1-2 sentences explaining why these pieces work before the cards show.
+
 HOW YOU WRITE:
-- Warm, direct, and specific. Like a text from a friend who knows fashion.
+- Warm, direct, and specific. Like a text from a friend who happens to have great taste.
 - Short sentences. No filler. No throat-clearing.
 - Never use em dashes or long dashes. Use commas or just start a new sentence.
 - Never say "Let me search", "I'll look for", "Let me check". Search silently, then talk.
 - Lead with one sharp sentence of reasoning, then show the items immediately.
 - Reference the person's actual pieces by name when explaining what works with what.
 - One confident recommendation beats three hedged ones.
-- Never invent items. Only recommend what the tools actually return."""
+- Never invent items. Only recommend what the tools actually return.
+
+NEVER IN USER-FACING COPY:
+- Never mention internal scores, ranking signals, metric names, or any decimal or percentage values from tools.
+- Never quote or paraphrase numeric evaluations. Say how things look and feel in plain language.
+- Tool blurbs may include qualitative hints for you only. Translate them into human language with zero numbers.
+
+HOW YOU SEARCH:
+- When searching for work or professional pieces, use specific descriptive queries: "tailored trousers straight leg" not "work pants", "structured blazer office" not "work top", "polished midi skirt pencil" not "work skirt". Occasion words alone return casual results. Describe the garment shape, fabric, and formality.
+- Always prefer garment-level descriptions over occasion categories. "Silk button-down blouse" beats "nice top for work." The catalog search is visual, so the more precise and visual your query, the better the results."""
 
 
 def _build_tools() -> list[dict]:
@@ -121,16 +142,15 @@ def _build_tools() -> list[dict]:
         {
             "name": "search_catalog",
             "description": (
-                "Search the catalog for items. Use item_type and colors for specific requests "
-                "(e.g. user asks for 'red dress' → item_type='dress', colors=['red']). "
-                "Use only the query field for exploratory/vague requests."
+                "Search the catalog for individual items. Use for single-item lookups "
+                "(find a blazer, show me boots). NOT for building full outfits."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural language description of what to search for",
+                        "description": "Descriptive natural language query. Use garment-level terms (tailored trousers straight leg, structured wool blazer) not vague occasion words (work pants).",
                     },
                     "item_type": {
                         "type": "string",
@@ -162,16 +182,28 @@ def _build_tools() -> list[dict]:
             },
         },
         {
-            "name": "analyze_wardrobe",
-            "description": "Analyze the user's wardrobe: gaps, coverage, utility scores, and what combinations are possible.",
+            "name": "curate_outfit",
+            "description": (
+                "Build a complete shoppable outfit for an occasion. Retrieves candidates per slot "
+                "(top, bottom, shoes, outerwear), filters for occasion appropriateness, and scores "
+                "the combination as a set so everything goes together. Use this for 'build me a work outfit', "
+                "'what should I wear to brunch', or any full-outfit request."
+            ),
             "input_schema": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "occasion": {
+                        "type": "string",
+                        "enum": ["work", "casual", "evening", "weekend", "special"],
+                        "description": "The occasion to curate an outfit for",
+                    },
+                },
+                "required": ["occasion"],
             },
         },
         {
             "name": "build_outfit",
-            "description": "Build a complete outfit for a specific occasion using wardrobe items + optional catalog addition.",
+            "description": "Build an outfit from the user's existing wardrobe items + one optional catalog addition. Use for 'what can I wear from my closet to work' style questions.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -185,17 +217,11 @@ def _build_tools() -> list[dict]:
             },
         },
         {
-            "name": "score_item",
-            "description": "Score a specific catalog item against the user's wardrobe and taste. Returns taste fit, outfit unlock count, and pairing suggestions.",
+            "name": "analyze_wardrobe",
+            "description": "Analyze the user's wardrobe: gaps, coverage, and what combinations are possible.",
             "input_schema": {
                 "type": "object",
-                "properties": {
-                    "item_id": {
-                        "type": "string",
-                        "description": "The catalog item ID to score",
-                    },
-                },
-                "required": ["item_id"],
+                "properties": {},
             },
         },
     ]
@@ -211,6 +237,7 @@ def _execute_tool(
     anti_taste_vector: np.ndarray | None,
     price_tier: tuple[float, float],
     style_attributes: dict[str, float] | None = None,
+    last_outfit_items: list[dict] | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Execute a tool and return (result_text, items_to_emit).
@@ -233,7 +260,6 @@ def _execute_tool(
         owned_ids = {item["item_id"] for item in wardrobe}
 
         if is_shopping:
-            # Shopping mode: staged metadata search → shopping ranker
             slots_filter = [slot_filter] if slot_filter else None
             candidates, search_stage = search_with_filters(
                 query_vector=query_emb,
@@ -252,7 +278,6 @@ def _execute_tool(
                 top_k=top_k,
             )
         else:
-            # Discovery/stylist mode: gap-filling round-robin + taste ranking
             search_stage = "discovery"
             gap_slots = [slot_filter] if slot_filter else [
                 "tops", "bottoms", "outerwear", "shoes", "bags", "accessories"
@@ -263,6 +288,7 @@ def _execute_tool(
                 price_tier=price_tier,
                 top_k=top_k * 3,
                 exclude_ids=owned_ids,
+                trend_fingerprint=trend_fingerprint,
             )
             if taste_modes:
                 ranked = rank_candidates(
@@ -278,78 +304,111 @@ def _execute_tool(
                 ranked = candidates
 
         results = ranked[:top_k]
+
+        # If there are context items from a previous outfit, score compatibility
+        if last_outfit_items and results:
+            for r in results:
+                r_emb = np.array(r.get("embedding", []), dtype=np.float32)
+                if r_emb.size == 0:
+                    r["_ctx_compat"] = 0.0
+                    continue
+                scores = []
+                for ctx in last_outfit_items:
+                    ctx_emb = ctx.get("embedding")
+                    if ctx_emb is None:
+                        continue
+                    s = compatibility_score(
+                        r_emb, np.array(ctx_emb, dtype=np.float32),
+                        r.get("slot", ""), ctx.get("slot", ""),
+                        r.get("dominant_color", ""), ctx.get("dominant_color", ""),
+                    )
+                    scores.append(s)
+                r["_ctx_compat"] = float(np.mean(scores)) if scores else 0.0
+            results.sort(key=lambda x: x.get("_ctx_compat", 0), reverse=True)
+
         items_to_emit = [_clean_item(r) for r in results]
 
-        # Build result summary with fallback context
         stage_labels = {
             "exact": "exact match",
-            "relaxed_color": "related colors (exact type wasn't available in the requested color)",
-            "type_only": "matching type, any color (requested color not in stock)",
-            "semantic": "closest visual matches (requested item type not in catalog)",
+            "relaxed_color": "related colors",
+            "type_only": "matching type, any color",
+            "semantic": "closest visual matches",
             "discovery": "discovery mode",
         }
         stage_note = stage_labels.get(search_stage, search_stage)
 
-        header = f"[Search mode: {stage_note}]"
-        if is_shopping and search_stage != "exact":
-            requested = []
-            if item_type:
-                requested.append(f"type={item_type}")
-            if colors:
-                requested.append(f"colors={colors}")
-            header += f"\nRequested: {', '.join(requested)}. Showing best available alternatives."
-
+        header = f"[Search: {stage_note}]"
         summaries = [header]
         for r in results:
             line = f"- {r['title']} by {r['brand']} (${r['price']}, {r['slot']}"
             if r.get("item_type"):
                 line += f", type={r['item_type']}"
-            if r.get("colors"):
-                line += f", colors={r['colors']}"
             line += f") [id: {r['item_id']}]"
-            line += f"\n  scores: query={r.get('query_score', 0):.2f}, taste={r.get('taste_score', 0):.2f}"
+            if r.get("_ctx_compat", 0) > 0:
+                compat = r["_ctx_compat"]
+                fit_note = (
+                    "Excellent visual match with the current outfit."
+                    if compat >= 0.7
+                    else "Works well with the current outfit."
+                    if compat >= 0.5
+                    else "Okay fit with the current outfit, not the strongest pairing."
+                )
+                line += f"\n  {fit_note}"
             summaries.append(line)
 
-        if len(summaries) <= 1:
+        summaries.append("\nIMPORTANT: You may ONLY describe items listed above. Do not invent or reference any other items.")
+
+        if len(summaries) <= 2:
             no_match = f"No items found for query='{query}'"
-            if item_type:
-                no_match += f", item_type={item_type}"
-            if colors:
-                no_match += f", colors={colors}"
             summary = get_catalog_summary()
             available_types = list(summary.get("item_types", {}).keys())[:10]
-            available_colors = list(summary.get("colors", {}).keys())[:10]
             no_match += f"\nAvailable item types: {', '.join(available_types)}"
-            no_match += f"\nAvailable colors: {', '.join(available_colors)}"
             no_match += "\nSuggest alternatives from what's actually in stock."
             return no_match, items_to_emit
 
         return "\n".join(summaries), items_to_emit
 
-    elif tool_name == "analyze_wardrobe":
-        stats = get_wardrobe_stats(wardrobe)
-        coverage = compute_slot_coverage(wardrobe)
-        gaps = get_gap_slots(coverage)
+    elif tool_name == "curate_outfit":
+        occasion = tool_input.get("occasion", "casual")
+
+        context = last_outfit_items if last_outfit_items else None
+        result = curate_outfit_from_catalog(
+            occasion=occasion,
+            taste_vector=taste_vector,
+            taste_modes=taste_modes,
+            trend_fingerprint=trend_fingerprint,
+            anti_taste_vector=anti_taste_vector,
+            price_tier=price_tier,
+            wardrobe=wardrobe,
+            context_items=context,
+        )
+
+        items_to_emit = result["items"]
+
+        hs = float(result.get("harmony_score", 0) or 0)
+        cohesion = (
+            "These pieces read as one cohesive outfit."
+            if hs >= 0.7
+            else "The combination is workable with a clear anchor piece."
+            if hs >= 0.5
+            else "The mix may need a swap to feel intentional."
+        )
 
         lines = [
-            f"Total items: {stats['total_items']}",
-            f"Slot coverage: {json.dumps(stats['slot_counts'])}",
-            f"Gaps (0-1 items): {', '.join(gaps) if gaps else 'No gaps — well rounded!'}",
-            f"Strongest slot: {stats.get('strongest_slot', 'none')}",
+            f"Outfit: {result['title']}",
+            cohesion,
+            f"Slots filled: {', '.join(result['filled_slots'])}",
         ]
+        if result["missing_slots"]:
+            lines.append(f"Could not find occasion-appropriate items for: {', '.join(result['missing_slots'])}")
 
-        if wardrobe:
-            lines.append("\nItems by slot:")
-            for slot, items in coverage.items():
-                if items:
-                    for item in items:
-                        unlock = outfit_unlock_count(item, wardrobe)
-                        lines.append(
-                            f"  [{slot}] {item.get('title', 'Unknown')} "
-                            f"(${item.get('price', 0)}) — enables {unlock} outfits"
-                        )
+        lines.append("\nItems in this outfit (reference ONLY these by name):")
+        for it in result["items"]:
+            lines.append(f"  [{it['slot']}] {it.get('title', 'Unknown')} by {it.get('brand', '?')} (${it.get('price', 0)})")
 
-        return "\n".join(lines), []
+        lines.append("\nIMPORTANT: You may ONLY describe items listed above. Do not invent or reference any other items, brands, or products.")
+
+        return "\n".join(lines), items_to_emit
 
     elif tool_name == "build_outfit":
         occasion = tool_input.get("occasion", "casual")
@@ -368,52 +427,64 @@ def _execute_tool(
             all_items = all_items + [result["catalog_addition"]]
         items_to_emit = all_items
 
+        hs = float(result.get("harmony_score", 0) or 0)
+        cohesion = (
+            "These pieces read as one cohesive outfit."
+            if hs >= 0.7
+            else "The combination is workable with a clear anchor piece."
+            if hs >= 0.5
+            else "The mix may need a swap to feel intentional."
+        )
         lines = [
             f"Outfit: {result['title']}",
-            f"Harmony score: {result['harmony_score']}",
+            cohesion,
             f"Complete: {'Yes' if result['is_complete'] else 'No'}",
             f"Rationale: {result['rationale']}",
-            "\nItems:",
+            "\nItems (reference ONLY these by name):",
         ]
         for item in result["wardrobe_items"]:
             lines.append(f"  [wardrobe] {item.get('title', 'Unknown')} ({item.get('slot', '')})")
         if result["catalog_addition"]:
             add = result["catalog_addition"]
-            lines.append(f"  [ADD THIS] {add.get('title', 'Unknown')} ({add.get('slot', '')}) — ${add.get('price', 0)}")
+            lines.append(f"  [catalog] {add.get('title', 'Unknown')} ({add.get('slot', '')}) ${add.get('price', 0)}")
+
+        lines.append("\nIMPORTANT: You may ONLY describe items listed above. Do not invent or reference any other items.")
 
         return "\n".join(lines), items_to_emit
 
-    elif tool_name == "score_item":
-        item_id = tool_input.get("item_id", "")
-        try:
-            _, catalog = load_index()
-        except FileNotFoundError:
-            return "Catalog not loaded.", []
-
-        item = next((i for i in catalog if i["item_id"] == item_id), None)
-        if not item:
-            return f"Item {item_id} not found in catalog.", []
-
-        item_emb = np.array(item["embedding"], dtype=np.float32)
-        taste_fit = max(0.0, float(np.dot(taste_vector, item_emb)))
-        unlock = outfit_unlock_count(item, wardrobe)
-        pairs = find_pairs(item, wardrobe)
-
-        items_to_emit = [_clean_item(item)]
-
-        pair_names = [p.get("title", "Unknown") for p in pairs[:3]]
-        confidence = "HIGH" if taste_fit > 0.5 and unlock >= 2 else \
-                     "MEDIUM" if taste_fit > 0.35 or unlock >= 1 else "LOW"
+    elif tool_name == "analyze_wardrobe":
+        stats = get_wardrobe_stats(wardrobe)
+        coverage = compute_slot_coverage(wardrobe)
+        gaps = get_gap_slots(coverage)
 
         lines = [
-            f"Item: {item['title']} by {item['brand']} (${item['price']})",
-            f"Taste Fit: {taste_fit:.0%}",
-            f"Purchase Confidence: {confidence}",
-            f"Outfit Unlocks: {unlock} new combinations",
-            f"Pairs with: {', '.join(pair_names) if pair_names else 'no existing saves'}",
+            f"Total items: {stats['total_items']}",
+            f"Slot coverage: {json.dumps(stats['slot_counts'])}",
+            f"Gaps (0-1 items): {', '.join(gaps) if gaps else 'No gaps, well rounded!'}",
+            f"Strongest slot: {stats.get('strongest_slot', 'none')}",
         ]
 
-        return "\n".join(lines), items_to_emit
+        if wardrobe:
+            lines.append("\nItems by slot:")
+            for slot, items in coverage.items():
+                if items:
+                    for item in items:
+                        unlock = outfit_unlock_count(item, wardrobe)
+                        util = (
+                            "many new outfit combinations"
+                            if unlock >= 4
+                            else "several new outfit combinations"
+                            if unlock >= 2
+                            else "a few new pairings"
+                            if unlock >= 1
+                            else "limited new combinations with the rest of the closet"
+                        )
+                        lines.append(
+                            f"  [{slot}] {item.get('title', 'Unknown')} "
+                            f"(${item.get('price', 0)}) — {util}"
+                        )
+
+        return "\n".join(lines), []
 
     return "Unknown tool.", []
 
@@ -425,20 +496,19 @@ async def run_stylist_chat(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Run the agentic stylist chat loop. Yields SSE events:
-    - {type: "text", content: "..."}   ← streamed token-by-token
-    - {type: "item_card", item: {...}}  ← emitted after tool execution
+    - {type: "text", content: "..."}   <- streamed token-by-token
+    - {type: "item_card", item: {...}}  <- emitted after tool execution
     - {type: "outfit_bundle", items: [...], title: "...", occasion: "..."}
     - {type: "done"}
     """
     settings = get_settings()
     if not settings.anthropic_api_key:
-        yield {"type": "text", "content": "Chat is not available — ANTHROPIC_API_KEY not configured."}
+        yield {"type": "text", "content": "Chat is not available, ANTHROPIC_API_KEY not configured."}
         yield {"type": "done"}
         return
 
     import anthropic
 
-    # Use async client so we can stream tokens without blocking the event loop
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     taste_vector = np.array(taste_profile.get("taste_vector", []), dtype=np.float32)
@@ -451,7 +521,9 @@ async def run_stylist_chat(
     system_prompt = _build_system_prompt(wardrobe, taste_profile)
     tools = _build_tools()
 
-    # Convert messages to Anthropic format
+    # Session context: track last emitted outfit/items for follow-up compatibility
+    last_outfit_items: list[dict] = []
+
     api_messages = []
     for msg in messages:
         role = msg.get("role", "user")
@@ -461,20 +533,17 @@ async def run_stylist_chat(
 
     for turn in range(MAX_AGENT_TURNS):
         try:
-            # Stream the response so text tokens arrive incrementally
             async with client.messages.stream(
                 model="claude-sonnet-4-20250514",
-                max_tokens=400,
+                max_tokens=600,
                 system=system_prompt,
                 tools=tools,
                 messages=api_messages,
             ) as stream:
-                # Yield text tokens as they arrive (empty during tool-call turns)
                 async for text_chunk in stream.text_stream:
                     if text_chunk:
                         yield {"type": "text", "content": text_chunk}
 
-                # Get the complete response for tool-use processing
                 response = await stream.get_final_message()
 
         except Exception as e:
@@ -487,20 +556,22 @@ async def run_stylist_chat(
             yield {"type": "done"}
             return
 
-        # Process tool_use blocks from the completed response
         assistant_content = []
         has_tool_use = False
+        turn_emitted_any_items = False
+        turn_emitted_any_text = any(
+            block.type == "text" and block.text.strip()
+            for block in response.content
+        )
 
         for block in response.content:
             if block.type == "text":
-                # Text was already streamed above; just track for message history
                 assistant_content.append(block)
 
             elif block.type == "tool_use":
                 has_tool_use = True
                 assistant_content.append(block)
 
-                # Run synchronous tool execution in a thread so we don't block the loop
                 result_text, items = await asyncio.to_thread(
                     _execute_tool,
                     block.name,
@@ -512,21 +583,28 @@ async def run_stylist_chat(
                     anti_taste,
                     price_tier,
                     style_attrs,
+                    last_outfit_items,
                 )
 
-                # Emit item cards or outfit bundles
-                if block.name == "build_outfit" and items:
+                # Update session context with emitted items (keep embeddings for follow-ups)
+                if items:
+                    turn_emitted_any_items = True
+                    if block.name in ("curate_outfit", "build_outfit"):
+                        last_outfit_items = items[:]
+                    else:
+                        last_outfit_items = items[:]
+
+                if block.name in ("curate_outfit", "build_outfit") and items:
                     yield {
                         "type": "outfit_bundle",
-                        "items": items,
+                        "items": [_clean_item(it) for it in items],
                         "title": block.input.get("occasion", "Look").title(),
                         "occasion": block.input.get("occasion", "casual"),
                     }
                 else:
                     for item in items:
-                        yield {"type": "item_card", "item": item}
+                        yield {"type": "item_card", "item": _clean_item(item)}
 
-                # Append assistant turn and tool result for next iteration
                 api_messages.append({"role": "assistant", "content": assistant_content})
                 api_messages.append({
                     "role": "user",
@@ -538,11 +616,12 @@ async def run_stylist_chat(
                 })
                 assistant_content = []
 
-        # If no tool was used this turn, Claude has finished responding
         if not has_tool_use:
+            # If we emitted items but the model produced no text, add a fallback
+            if turn_emitted_any_items and not turn_emitted_any_text:
+                yield {"type": "text", "content": "Here are some pieces I pulled together for you."}
             break
 
-        # Keep any trailing assistant content in the message history
         if assistant_content:
             api_messages.append({"role": "assistant", "content": assistant_content})
 

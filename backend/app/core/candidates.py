@@ -75,12 +75,16 @@ def load_index(base_path: str | None = None) -> tuple[faiss.IndexFlatIP, list[di
 
 
 def _ensure_metadata(items: list[dict]) -> None:
-    """Backfill item_type/colors/occasions for catalogs built before enrichment."""
-    needs_enrichment = any("item_type" not in item for item in items)
-    if not needs_enrichment:
-        return
-    from app.data.catalog_builder import enrich_catalog_metadata
-    enrich_catalog_metadata(items)
+    """Backfill item_type/colors/occasions/style_tags for catalogs built before enrichment."""
+    needs_type = any("item_type" not in item for item in items)
+    needs_style = any("style_tags" not in item for item in items)
+
+    if needs_type:
+        from app.data.catalog_builder import enrich_catalog_metadata
+        enrich_catalog_metadata(items)
+    elif needs_style:
+        from app.data.catalog_builder import _assign_style_tags
+        _assign_style_tags(items)
 
 
 def _build_catalog_summary(items: list[dict]) -> dict:
@@ -244,12 +248,45 @@ def _in_price_band(
     return low <= price <= high
 
 
+def blend_taste_with_trends(
+    taste_vector: np.ndarray,
+    trend_fingerprint: dict[str, float] | None = None,
+    blend_weight: float = 0.25,
+) -> np.ndarray:
+    """Blend a taste vector with the user's top trend embedding for biased retrieval.
+
+    This nudges FAISS search toward the user's style subculture (e.g. streetwear,
+    coquette) rather than relying on the raw taste centroid which can be generic.
+    """
+    if not trend_fingerprint:
+        return taste_vector
+
+    from app.core.trends import get_trend_embeddings
+    trend_names, trend_embs = get_trend_embeddings()
+    name_to_idx = {n: i for i, n in enumerate(trend_names)}
+
+    top_trend = max(trend_fingerprint, key=trend_fingerprint.get)
+    idx = name_to_idx.get(top_trend)
+    if idx is None:
+        return taste_vector
+
+    tv = np.array(taste_vector, dtype=np.float32)
+    trend_vec = trend_embs[idx].astype(np.float32)
+
+    blended = (1.0 - blend_weight) * tv + blend_weight * trend_vec
+    norm = np.linalg.norm(blended)
+    if norm > 0:
+        blended = blended / norm
+    return blended
+
+
 def generate_candidates(
     taste_vector: np.ndarray,
     gap_slots: list[str],
     price_tier: tuple[float, float],
     top_k: int = 100,
     exclude_ids: set[str] | None = None,
+    trend_fingerprint: dict[str, float] | None = None,
 ) -> list[dict]:
     """
     Per-slot bucketed retrieval with round-robin interleaving.
@@ -257,13 +294,17 @@ def generate_candidates(
     Retrieves broadly, buckets by gap slot, then interleaves
     in SLOT_PRIORITY order so underrepresented slots aren't
     drowned out by globally-dominant categories.
+
+    When trend_fingerprint is provided, the query vector is blended with
+    the user's top trend embedding for style-biased retrieval.
     """
     settings = get_settings()
     tolerance = settings.price_band_tolerance
     top_k_per_slot = max(top_k // max(len(gap_slots), 1), 15)
     exclude = exclude_ids or set()
 
-    results = search(taste_vector, top_k=top_k_per_slot * len(gap_slots) * 3)
+    query_vec = blend_taste_with_trends(taste_vector, trend_fingerprint)
+    results = search(query_vec, top_k=top_k_per_slot * len(gap_slots) * 3)
 
     ordered_slots = [s for s in SLOT_PRIORITY if s in gap_slots]
     for s in gap_slots:

@@ -15,3 +15,4 @@ backend/data/images/
 backend/data/event_log.jsonl
 .venv/
 venv/
+.cursor/

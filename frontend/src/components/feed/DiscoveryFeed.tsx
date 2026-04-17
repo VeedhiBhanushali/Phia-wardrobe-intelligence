@@ -92,10 +92,25 @@ export function DiscoveryFeed({
 
   if (!feed) return null;
 
+  const renderedIds = new Set<string>();
+  const dedup = <T extends { item: { item_id: string } }>(items: T[]): T[] =>
+    items.filter((p) => {
+      if (renderedIds.has(p.item.item_id)) return false;
+      renderedIds.add(p.item.item_id);
+      return true;
+    });
+
+  const closetItems = dedup(feed.completeYourCloset);
+  const aestheticItems = dedup(feed.yourAesthetic);
+
+  for (const o of feed.completeYourOutfits) {
+    if (o.catalog_addition) renderedIds.add(o.catalog_addition.item_id);
+  }
+
   return (
     <div className="pb-8">
       {/* Complete Your Closet */}
-      {feed.completeYourCloset.length > 0 && (
+      {closetItems.length > 0 && (
         <div className="mt-4">
           <div className="px-4">
             <SectionHeader
@@ -104,7 +119,7 @@ export function DiscoveryFeed({
             />
           </div>
           <div className="flex gap-3 overflow-x-auto hide-scrollbar px-4 mt-2 pb-2">
-            {feed.completeYourCloset.map((pick) => (
+            {closetItems.map((pick) => (
               <div key={pick.item.item_id} className="w-[160px] shrink-0">
                 <ProductCard
                   item={pick.item}
@@ -122,7 +137,7 @@ export function DiscoveryFeed({
       )}
 
       {/* Your Aesthetic */}
-      {feed.yourAesthetic.length > 0 && (
+      {aestheticItems.length > 0 && (
         <div className="mt-6">
           <div className="px-4">
             <SectionHeader
@@ -131,7 +146,7 @@ export function DiscoveryFeed({
             />
           </div>
           <div className="flex gap-3 overflow-x-auto hide-scrollbar px-4 mt-2 pb-2">
-            {feed.yourAesthetic.map((pick) => (
+            {aestheticItems.map((pick) => (
               <div key={pick.item.item_id} className="w-[160px] shrink-0">
                 <ProductCard
                   item={pick.item}
@@ -166,7 +181,7 @@ export function DiscoveryFeed({
                   </p>
                   {outfit.harmony_score > 0 && (
                     <span className="text-[10px] text-phia-gray-400">
-                      {outfit.harmony_score >= 0.92 ? "Strong" : outfit.harmony_score >= 0.80 ? "Good" : "Fair"} harmony{" "}
+                      {outfit.harmony_score >= 0.80 ? "Strong" : outfit.harmony_score >= 0.60 ? "Good" : "Fair"} harmony{" "}
                       <span className="opacity-60">{Math.round(outfit.harmony_score * 100)}%</span>
                     </span>
                   )}
@@ -253,16 +268,25 @@ export function DiscoveryFeed({
       )}
 
       {/* Occasion Rows */}
-      {feed.occasionRows.map((section) => (
+      {feed.occasionRows.map((section) => {
+        const picks = section.items.filter(
+          (p: { item: { item_id: string } }) => {
+            if (renderedIds.has(p.item.item_id)) return false;
+            renderedIds.add(p.item.item_id);
+            return true;
+          }
+        );
+        if (picks.length === 0) return null;
+        return (
         <div key={section.occasion} className="mt-6">
           <div className="px-4">
             <SectionHeader
               title={section.label}
-              subtitle={`${section.items.length} picks`}
+              subtitle={`${picks.length} picks`}
             />
           </div>
           <div className="flex gap-3 overflow-x-auto hide-scrollbar px-4 mt-2 pb-2">
-            {section.items.map(
+            {picks.map(
               (pick: {
                 item: WardrobeItem;
                 taste_score: number;
@@ -282,7 +306,8 @@ export function DiscoveryFeed({
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

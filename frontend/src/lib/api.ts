@@ -79,6 +79,7 @@ export const api = {
       item_id: string;
       style_attributes?: Record<string, number>;
       dismiss_count?: number;
+      silhouette_label?: string;
     }) =>
       request<{
         style_attributes: Record<string, number>;

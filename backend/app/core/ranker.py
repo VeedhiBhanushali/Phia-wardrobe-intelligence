@@ -330,6 +330,30 @@ def _negative_prototype_penalty(
     return max(sim - threshold, 0.0)
 
 
+def _style_tag_boost(
+    candidate: dict,
+    trend_fingerprint: dict[str, float],
+    top_k: int = 3,
+) -> float:
+    """Bonus for items whose pre-computed style tags overlap with the user's top trends.
+
+    Returns a value in [0, 0.5]. This is cheaper than re-projecting embeddings
+    at query time and directly rewards items tagged as the user's style subculture.
+    """
+    style_tags = candidate.get("style_tags")
+    if not style_tags or not trend_fingerprint:
+        return 0.0
+
+    user_top = sorted(trend_fingerprint, key=trend_fingerprint.get, reverse=True)[:top_k]
+    boost = 0.0
+    for trend in user_top:
+        item_affinity = style_tags.get(trend, 0.0)
+        user_affinity = trend_fingerprint.get(trend, 0.0)
+        if item_affinity > 0 and user_affinity > 0:
+            boost += item_affinity * user_affinity
+    return min(boost, 0.5)
+
+
 def mmr_rerank(
     scored: list[dict], k: int = 5, lam: float = 0.7
 ) -> list[dict]:
@@ -456,6 +480,9 @@ def rank_candidates(
         # Multi-axis attribute mismatch penalty
         attr_pen = _attribute_profile_penalty(c_emb_normed, style_attributes or {})
 
+        # Style-tag affinity boost (rewards items tagged in user's top trends)
+        style_boost = _style_tag_boost(c, trend_fingerprint or {})
+
         unlock = outfit_unlock_count(c, wardrobe)
         utility_score = min(unlock / 10.0, 1.0)
         compat = aggregate_compatibility(c, wardrobe)
@@ -465,6 +492,7 @@ def rank_candidates(
                 0.65 * taste_scale * taste_fit
                 + session_intent_weight * session_intent_fit
                 + 0.25 * t_boost
+                + 0.15 * style_boost
                 - 0.10 * anti_pen
                 - w_skip * skip_pen
                 - attr_pen
@@ -474,6 +502,7 @@ def rank_candidates(
                 w_taste * taste_scale * taste_fit
                 + session_intent_weight * session_intent_fit
                 + w_trend * t_boost
+                + 0.12 * style_boost
                 + w_utility * (utility_score * 0.6 + compat * 0.4)
                 - w_anti * anti_pen
                 - w_skip * skip_pen

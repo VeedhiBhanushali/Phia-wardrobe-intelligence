@@ -146,6 +146,7 @@ class TasteDismissRequest(BaseModel):
     item_id: str
     style_attributes: dict[str, float] = Field(default_factory=dict)
     dismiss_count: int = 1
+    silhouette_label: str = ""
 
 class TasteDismissResponse(BaseModel):
     style_attributes: dict[str, float]

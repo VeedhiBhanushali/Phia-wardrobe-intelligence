@@ -26,7 +26,10 @@ router = APIRouter(prefix="/api/recommendations", tags=["feed"])
 
 
 def _build_taste_percentile_fn(
-    taste_vector: np.ndarray, catalog: list[dict], sample_size: int = 500,
+    taste_vector: np.ndarray,
+    catalog: list[dict],
+    sample_size: int = 500,
+    taste_modes: list[np.ndarray] | None = None,
 ):
     """Build a function that converts raw taste cosine → percentile (0–1).
 
@@ -34,7 +37,12 @@ def _build_taste_percentile_fn(
     then returns a closure that maps any raw score to its percentile
     among all catalog items.  This makes displayed scores meaningful:
     95% means "better taste match than 95% of the catalog."
+
+    When taste_modes are provided, uses multi-mode scoring (max across
+    modes) to match the ranker's _multi_mode_taste_score behaviour.
     """
+    modes = taste_modes if taste_modes else [taste_vector]
+
     rng = np.random.RandomState(0)
     indices = rng.choice(len(catalog), size=min(sample_size, len(catalog)), replace=False)
     sample_scores = []
@@ -43,7 +51,8 @@ def _build_taste_percentile_fn(
         n = np.linalg.norm(emb)
         if n > 0:
             emb = emb / n
-        sample_scores.append(max(0.0, float(np.dot(emb, taste_vector))))
+        best = max(max(0.0, float(np.dot(emb, m))) for m in modes)
+        sample_scores.append(best)
     sample_scores.sort()
     arr = np.array(sample_scores)
 
@@ -103,7 +112,7 @@ async def discovery_feed(req: FeedRequest):
     save_count = len(wardrobe)
     query_vector = blend_vectors(taste_vector, wardrobe_emb, save_count)
 
-    to_pct = _build_taste_percentile_fn(taste_vector, catalog)
+    to_pct = _build_taste_percentile_fn(taste_vector, catalog, taste_modes=taste_modes)
 
     skip_set = set(req.skipped_item_ids or [])
     negative_proto = build_negative_prototype(catalog, req.skipped_item_ids or [])
@@ -118,6 +127,7 @@ async def discovery_feed(req: FeedRequest):
             price_tier=price_tier,
             top_k=80,
             exclude_ids=seen_ids,
+            trend_fingerprint=trend_fp,
         )
         ranked = rank_candidates(
             candidates, wardrobe, taste_vector,
@@ -154,6 +164,7 @@ async def discovery_feed(req: FeedRequest):
             price_tier=price_tier,
             top_k=40,
             exclude_ids=seen_ids,
+            trend_fingerprint=trend_fp,
         )
         aesthetic_ranked = rank_candidates(
             aesthetic_candidates, wardrobe, taste_vector,
@@ -192,6 +203,8 @@ async def discovery_feed(req: FeedRequest):
                     anti_taste_vector=anti_taste,
                     price_tier=price_tier,
                 )
+                if outfit.get("catalog_addition"):
+                    seen_ids.add(outfit["catalog_addition"]["item_id"])
                 complete_your_outfits.append(outfit)
         except Exception:
             logger.exception("Error generating completeYourOutfits")

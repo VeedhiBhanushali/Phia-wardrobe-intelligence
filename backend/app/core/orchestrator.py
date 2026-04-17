@@ -227,6 +227,7 @@ def build_occasion_sections_unified(
                 price_tier=price_tier,
                 top_k=50,
                 exclude_ids=already,
+                trend_fingerprint=trend_fp,
             )
             modes = _occasion_rank_modes(occ_vec, taste_vector, taste_modes)
             ranked = rank_candidates(
@@ -304,6 +305,7 @@ def run_wardrobe_orchestration(
         price_tier=price_tier,
         top_k=50,
         exclude_ids=skip_set,
+        trend_fingerprint=trend_fp,
     )
 
     ranked = rank_candidates(

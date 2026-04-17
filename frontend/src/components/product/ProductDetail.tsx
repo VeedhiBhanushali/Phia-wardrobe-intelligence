@@ -220,7 +220,7 @@ export function ProductDetail({
                   {Math.round(evaluation.taste_fit * 100)}%
                 </span>
                 <p className="text-[10px] font-medium text-phia-black mt-0.5">
-                  {evaluation.taste_fit >= 0.92 ? "Strong fit" : evaluation.taste_fit >= 0.80 ? "Good fit" : "Fair fit"}
+                  {evaluation.taste_fit >= 0.80 ? "Strong fit" : evaluation.taste_fit >= 0.60 ? "Good fit" : "Fair fit"}
                 </p>
               </div>
 
@@ -257,7 +257,7 @@ export function ProductDetail({
                 <div className="rounded-xl border border-phia-blue/20 bg-phia-blue/5 p-3 mb-3 flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-phia-black">
-                      {evaluation.intent_match >= 0.92 ? "Strong" : evaluation.intent_match >= 0.80 ? "Good" : "Fair"} intent match
+                      {evaluation.intent_match >= 0.80 ? "Strong" : evaluation.intent_match >= 0.60 ? "Good" : "Fair"} intent match
                     </p>
                     <p className="text-[10px] text-phia-gray-500">
                       Based on your current browsing

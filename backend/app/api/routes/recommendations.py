@@ -276,14 +276,22 @@ async def evaluate_item_v2(req: EvaluateItemV2Request):
     unlock = outfit_unlock_count(item, wardrobe)
     pairs = find_pairs(item, wardrobe)
 
-    # Purchase confidence uses raw taste fit (not percentile) for internal scoring
-    score = raw_taste_fit * 0.4 + min(unlock / 5, 1.0) * 0.3 + (len(pairs) / 5) * 0.3
+    # Purchase confidence: taste-dominant scoring with wardrobe-scaled denominators
+    # so unlock/pairs don't saturate at small wardrobe sizes
+    w_size = max(len(wardrobe), 1)
+    unlock_denom = max(w_size * 2, 10)
+    pairs_denom = max(w_size * 2, 8)
+    score = (
+        raw_taste_fit * 0.50
+        + min(unlock / unlock_denom, 1.0) * 0.25
+        + min(len(pairs) / pairs_denom, 1.0) * 0.25
+    )
     if intent_match is not None:
         score = score * 0.7 + intent_match * 0.3
 
-    if score >= 0.5:
+    if score >= 0.35:
         confidence = "HIGH"
-    elif score >= 0.3:
+    elif score >= 0.18:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"

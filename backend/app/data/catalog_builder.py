@@ -197,7 +197,7 @@ def _detect_occasions(text: str) -> list[str]:
 
 
 def enrich_catalog_metadata(catalog: list[dict]) -> list[dict]:
-    """Add item_type, colors, and occasions to every catalog item in-place."""
+    """Add item_type, colors, occasions, and style_tags to every catalog item in-place."""
     for item in catalog:
         search_text = " ".join(filter(None, [
             item.get("title", ""),
@@ -220,7 +220,35 @@ def enrich_catalog_metadata(catalog: list[dict]) -> list[dict]:
         if not item.get("occasions"):
             item["occasions"] = _detect_occasions(search_text)
 
+    _assign_style_tags(catalog)
+
     return catalog
+
+
+def _assign_style_tags(catalog: list[dict], top_k: int = 3) -> None:
+    """Tag each item with its top-K style affinities using CLIP similarity to trend probes.
+
+    Stores a dict of {trend_name: similarity} on each item under "style_tags".
+    Only items with an embedding are tagged.
+    """
+    items_with_emb = [it for it in catalog if it.get("embedding")]
+    if not items_with_emb:
+        return
+
+    from app.core.trends import get_trend_embeddings
+    trend_names, trend_embs = get_trend_embeddings()
+
+    emb_matrix = np.array([it["embedding"] for it in items_with_emb], dtype=np.float32)
+    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    emb_matrix = emb_matrix / norms
+
+    sims = emb_matrix @ trend_embs.T  # (N, T)
+
+    for i, item in enumerate(items_with_emb):
+        row = sims[i]
+        top_idx = np.argsort(row)[-top_k:][::-1]
+        item["style_tags"] = {trend_names[j]: float(row[j]) for j in top_idx}
 
 
 def build_mock_catalog():

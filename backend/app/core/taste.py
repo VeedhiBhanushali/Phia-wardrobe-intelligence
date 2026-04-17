@@ -264,6 +264,10 @@ def extract_taste_profile(
     attributes = extract_attributes(taste_vector)
     price_tier = infer_price_tier(embeddings, existing_saves)
     style_attributes = compute_style_attribute_profile(embeddings, encoder)
+
+    sil_label = attributes.get("silhouette", {}).get("label", "")
+    constrain_fit_axes(style_attributes, sil_label)
+
     style_summary = style_attribute_summary(style_attributes)
 
     return {
@@ -531,6 +535,19 @@ def compute_style_attribute_profile(
         result[key] = float(np.clip(mean_diff / scale, -1.0, 1.0))
 
     return result
+
+
+def constrain_fit_axes(style_attributes: dict[str, float], silhouette_label: str) -> None:
+    """Clamp fit axes so they never contradict the coarse silhouette label.
+
+    Mutates style_attributes in place.
+    """
+    if silhouette_label in ("Relaxed", "Oversized"):
+        style_attributes["fit_oversized"] = max(style_attributes.get("fit_oversized", 0.0), 0.0)
+        style_attributes["fit_tailored"] = min(style_attributes.get("fit_tailored", 0.0), 0.0)
+    elif silhouette_label in ("Fitted", "Structured"):
+        style_attributes["fit_tailored"] = max(style_attributes.get("fit_tailored", 0.0), 0.0)
+        style_attributes["fit_oversized"] = min(style_attributes.get("fit_oversized", 0.0), 0.0)
 
 
 def style_attribute_summary(
