@@ -66,10 +66,8 @@ export function ProductDetail({
       setError(null);
       try {
         const catalogItem = (await api.catalog.getItem(itemId, true)) as WardrobeItem & { embedding?: number[] };
-        const embedding = catalogItem.embedding;
-        const cleanItem = { ...catalogItem } as Record<string, unknown>;
-        delete cleanItem.embedding;
-        setItem(cleanItem as WardrobeItem);
+        const { embedding, ...rest } = catalogItem;
+        setItem(rest);
 
         if (embedding && onViewItem) {
           onViewItem({ item_id: itemId, embedding });
@@ -86,7 +84,7 @@ export function ProductDetail({
               taste_vector: tasteProfile.taste_vector,
               intent_vector: intentVector,
               intent_confidence: intentConfidence ?? 0,
-            })) as EvalResult;
+            })) as unknown as EvalResult;
             setEvaluation(evalResult);
 
             log("impression", "product_detail", itemId, {

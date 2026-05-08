@@ -46,9 +46,27 @@ Meaningful personalization before any interaction history. Stable signal as ward
 
 **Backend** — Python 3.13, FastAPI, FashionCLIP (ViT-B/32, 512-d, fine-tuned on 800K Farfetch pairs), FAISS (IndexFlatIP), Claude API (tool use + streaming), NumPy, scikit-learn
 
-**Frontend** — Next.js 15, React, TypeScript, Tailwind CSS, Framer Motion, Server-Sent Events
+**Frontend** — Next.js 16, React 19, TypeScript, Tailwind CSS, Framer Motion, Server-Sent Events
 
 **Data** — 2,364-item catalog from `ashraq/fashion-product-images-small`, encoded with FashionCLIP image encoder; FAISS index persisted as `faiss_index.bin`; user state in localStorage
+
+---
+
+## Deploy (Vercel)
+
+Ship the UI from the `frontend/` directory as a Next.js app on [Vercel](https://vercel.com).
+
+**Production:** [frontend-flame-mu-52.vercel.app](https://frontend-flame-mu-52.vercel.app)
+
+FastAPI stays elsewhere (Railway, Render, Fly.io, etc.): expose it publicly with `ANTHROPIC_API_KEY`, catalog data under `backend/data/`, and any other env your deployment needs.
+
+Wire it up in one of two ways:
+
+1. **Public API URL** — In Vercel → Project → Settings → Environment Variables, set `NEXT_PUBLIC_API_URL` to your API origin (no trailing slash), e.g. `https://wardrobe-api.example.com`. On the API, set `CORS_ORIGINS` to your Vercel URL(s), comma-separated.
+
+2. **Same-origin proxy** — Set `BACKEND_URL` on Vercel (server-only) to that API origin. The browser calls `/api-backend/*`; Next rewrites to your backend. Still allow those origins in `CORS_ORIGINS` on the API.
+
+Redeploy the frontend after changing environment variables.
 
 ---
 

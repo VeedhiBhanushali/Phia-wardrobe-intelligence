@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from functools import lru_cache
 
 
@@ -48,7 +48,14 @@ class Settings(BaseSettings):
         validation_alias="ANTHROPIC_API_KEY",
     )
 
-    cors_origins: list[str] = ["http://localhost:3000"]
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return v
 
 
 @lru_cache()

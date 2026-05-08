@@ -16,3 +16,4 @@ backend/data/event_log.jsonl
 .venv/
 venv/
 .cursor/
+.vercel/

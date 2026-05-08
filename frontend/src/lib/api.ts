@@ -1,4 +1,13 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function resolveApiBase(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (process.env.NODE_ENV === "production") {
+    return "/api-backend";
+  }
+  return "http://localhost:8000";
+}
+
+const API_BASE = resolveApiBase();
 
 export function resolveImageUrl(url: string): string {
   if (url.startsWith("/static/")) return `${API_BASE}${url}`;
